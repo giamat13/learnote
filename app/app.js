@@ -453,7 +453,7 @@ function nextQ() {
   document.querySelectorAll('.pad button').forEach((b) => b.className = '');
   G.qn = (G.qn || 0) + 1;
   // spaced review: a note answered wrong comes back 2-4 questions later, in the same kind of exercise
-  const due = G.mode !== 'chain' && G.retry == null && (G.rev || []).find((r) => r.at <= G.qn);
+  const due = G.retry == null && (G.rev || []).find((r) => r.at <= G.qn);
   if (due) G.rev.splice(G.rev.indexOf(due), 1);
   const clef = G.retry != null ? G.retryClef : due ? due.clef : pickClef();
   const pn = S.path[clef].n, mixed = G.mode === 'path' || G.mode === 'weak';
@@ -469,10 +469,13 @@ function nextQ() {
     const d = chosen != null ? chosen : pickNote(clef, pool, G.prev, boost);
     G.prev = d;
     G.q = { clef, loc: true, rev: rv, tgt: d, target: letterOf(d), placed: null, pending: null, reveal: [] };
-  } else if (G.mode === 'chain') {
-    const pool = poolFor('chain', clef), notes = [];
-    for (let i = 0; i < G.k; i++) notes.push(pickNote(clef, pool, notes[i - 1]));
-    G.q = { clef, notes, idx: 0, res: notes.map(() => '') };
+  } else if (G.mode === 'chain' || (G.mode === 'path' && pn >= 3 && chosen == null && Math.random() < 0.2)) {
+    // chain: a short sequence (inside the path: 2-3 notes from the unlocked ones); a note due for review leads it
+    const emb = G.mode === 'path', len = emb ? (pn >= 5 ? 3 : 2) : G.k;
+    const pool = emb ? poolFor('path', clef) : poolFor('chain', clef), notes = [];
+    for (let i = 0; i < len; i++) notes.push(pickNote(clef, pool, notes[i - 1]));
+    if (due && pool.includes(due.d)) { notes[0] = due.d; if (notes[1] === due.d) notes[1] = pickNote(clef, pool, due.d); }
+    G.q = { clef, chain: true, emb, rev: rv, notes, idx: 0, res: notes.map(() => '') };
   } else {
     const pool = poolFor(G.mode, clef);
     // path: a wrong answer repeats the same note until it is answered correctly
@@ -510,6 +513,7 @@ function drawQ() {
   $('stage').innerHTML = staffSVG(q.clef, items);
   if (G.mode === 'path') $('prompt').innerHTML = `${CL[q.clef].name} · תו ${S.path[q.clef].n} מתוך ${CL[q.clef].path.length}`;
   else if (G.mode === 'chain') $('prompt').innerHTML = `שרשרת של <b>${G.k}</b> · מה התו ה-${q.idx + 1}?`;
+  if (G.mode === 'path' && q.chain) $('prompt').innerHTML = `${q.rev ? '🔁 ' : ''}🔗 שרשרת של <b>${q.notes.length}</b> · מה התו ה-${q.idx + 1}?`;
   else if (G.mode === 'free') $('prompt').textContent = `${CL[q.clef].name} · איזה תו זה?`;
   else if (G.mode === 'weak') $('prompt').textContent = `${q.rev ? '🔁 ' : ''}חיזוק · איזה תו זה?`;
   if (G.mode === 'path' && q.rev) $('prompt').innerHTML = '🔁 חזרה · ' + $('prompt').innerHTML;
@@ -555,13 +559,13 @@ function answer(i) {
     const p = award(ms, hinted), mult = G.streak >= 5 ? ` · x${(1 + Math.min(2, Math.floor(G.streak / 5) * 0.5)).toFixed(1)}` : '';
     msg(hinted ? 'נכון (עם רמז, בלי נקודות)' : `${ms < 2000 ? 'מהיר! ⚡ ' : 'נכון! '}+${p}${mult}`, 'ok');
   } else {
-    G.streak = 0; if (G.mode !== 'chain') review(clef, d, false); if (btn) btn.classList.add('bad'); padBtn(letterOf(d)).classList.add('ok'); q.res[q.idx] = 'bad';
+    G.streak = 0; review(clef, d, false); if (btn) btn.classList.add('bad'); padBtn(letterOf(d)).classList.add('ok'); q.res[q.idx] = 'bad';
     setTimeout(() => playNote(d), 200); buzz(60);
     msg(`${i === -1 ? 'נגמר הזמן! ' : ''}זה היה ${nm(d)} (${sci(d)})`, 'bad');
   }
   drawQ(); hud(); checkBadges({ ok: ok && !hinted, ms });
 
-  if (G.mode === 'chain') return chainAfter(ok);
+  if (q.chain) { if (q.emb) { pathProgress(clef, ok && !hinted, ms); hud(); } return chainAfter(ok); }
   if (G.mode === 'path') { pathProgress(clef, ok && !hinted, ms); hud(); }
   if (ok) {
     if (G.pendingIntro) { const intro = G.pendingIntro; G.pendingIntro = null; setTimeout(() => showIntro(intro), 450); }
@@ -605,7 +609,7 @@ function showIntro({ clef, d, finished }) {
 function chainAfter(ok) {
   const q = G.q;
   if (!ok) {
-    G.k = Math.max(1, G.k - 1);
+    if (!q.emb) G.k = Math.max(1, G.k - 1);
     track('chain_fail', { clef: q.clef, length: q.notes.length });
     $('next').hidden = false; save(); return;
   }
@@ -622,9 +626,10 @@ function chainAfter(ok) {
   track('chain_complete', { clef: q.clef, length: len });
   const bonus = len * 5; G.score += bonus; S.totals.score += bonus; // chain completion bonus
   checkBadges({});
-  G.k = Math.min(8, G.k + 1);
-  hud(); msg((len >= 8 ? 'שרשרת מושלמת! 🏆' : 'שרשרת הושלמה! מוסיפים עוד תו 🔗') + ` בונוס +${bonus}`, 'ok');
-  save(); setTimeout(nextQ, 900);
+  if (!q.emb) G.k = Math.min(8, G.k + 1);
+  hud(); msg((len >= 8 ? 'שרשרת מושלמת! 🏆' : q.emb ? 'שרשרת הושלמה! 🔗' : 'שרשרת הושלמה! מוסיפים עוד תו 🔗') + ` בונוס +${bonus}`, 'ok');
+  save();
+  if (G.pendingIntro) { const intro = G.pendingIntro; G.pendingIntro = null; setTimeout(() => showIntro(intro), 700); } else setTimeout(nextQ, 900);
 }
 
 // staff y -> diatonic index of the nearest line/space (whole staff is the target; no pixel-exact tapping)
