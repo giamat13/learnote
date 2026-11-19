@@ -92,17 +92,27 @@ const noiseBuf = (c) => {
 // Piano-like tone: stacked sine partials (upper ones slightly sharp, as on a real string),
 // each decaying faster than the one below; two detuned strings on the lowest partials;
 // a soft hammer click; and a low-pass that closes as the note fades.
+// Phone speakers barely reproduce anything below ~300 Hz, so low notes lean on their upper partials
+// (the ear still hears the pitch of the missing fundamental) and the filter never closes below 1.5 kHz.
 const playNote = (d, dur = 0.8, vol = 0.3) => {
   if (!S.settings.sound) return;
   const c = ac(); if (!c) return;
+  // a context that is still suspended (phones) has a frozen clock: start only once it is running
+  if (c.state === 'running') voice(c, c.destination, d, dur, vol);
+  else c.resume().then(() => voice(c, c.destination, d, dur, vol)).catch(() => {});
+};
+const voice = (c, dest, d, dur, vol) => {
   const t = c.currentTime, f0 = freqOf(midiOf(d));
-  const out = c.createGain(); out.connect(c.destination);
+  const out = c.createGain(); out.connect(dest);
   const body = c.createBiquadFilter(); body.type = 'lowpass';
-  body.frequency.setValueAtTime(Math.min(12000, Math.max(1500, f0 * 14)), t);
-  body.frequency.setTargetAtTime(Math.min(3000, Math.max(300, f0 * 4)), t, dur * 0.35 + 0.05);
+  body.frequency.setValueAtTime(Math.min(12000, Math.max(3000, f0 * 14)), t);
+  body.frequency.setTargetAtTime(Math.min(3500, Math.max(1500, f0 * 5)), t, dur * 0.35 + 0.05);
   body.connect(out);
   const tau = dur * 0.8 + 0.12, life = tau * 4.5 + 0.1; // ~1% level when the oscillators stop
-  const amps = [1, 0.55, 0.3, 0.17, 0.1, 0.06], sum = amps.reduce((a, b) => a + b, 0), B = 0.0004;
+  const base = [1, 0.55, 0.3, 0.17, 0.1, 0.06, 0.04, 0.025], B = 0.0004;
+  const small = (fk) => (fk < 150 ? 0.25 : fk < 300 ? 0.25 + 0.75 * (fk - 150) / 150 : 1); // small-speaker weighting
+  const amps = base.slice(0, f0 < 200 ? 8 : 6).map((a, i) => a * small((i + 1) * f0));
+  const sum = amps.reduce((a, b) => a + b, 0);
   amps.forEach((a, i) => {
     const k = i + 1, fk = k * f0 * Math.sqrt(1 + B * k * k);
     if (fk > 16000) return;
@@ -112,7 +122,7 @@ const playNote = (d, dur = 0.8, vol = 0.3) => {
       const o = c.createOscillator(), g = c.createGain();
       o.type = 'sine';
       o.frequency.value = fk * Math.pow(2, cents / 1200);
-      const peak = (vol * 1.6 * a / sum) / strings.length;
+      const peak = (vol * 2.2 * a / sum) / strings.length;
       g.gain.setValueAtTime(0, t);
       g.gain.linearRampToValueAtTime(peak, t + 0.004);
       g.gain.setTargetAtTime(0, t + 0.004, decay);
@@ -780,5 +790,5 @@ track('app_open', { clef: S.clef, standalone: !!(window.matchMedia && matchMedia
 track('screen_view', { screen_name: 'home' });
 
 // tiny hook for tests
-window.__learnote = { S: () => S, CL, letterOf, midiOf, sci };
+window.__learnote = { voice, S: () => S, CL, letterOf, midiOf, sci };
 })();
