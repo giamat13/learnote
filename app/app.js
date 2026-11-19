@@ -157,21 +157,16 @@ const noteSVG = (clef, it) => {
   }
   if (it.label) g += `<text class="lb" x="${x}" y="${it.ly || 214}" text-anchor="middle">${it.label}</text>`;
   const tap = it.tap ? `<rect class="tapzone" x="${x - 22}" y="${y - 18}" width="44" height="36"/>` : '';
-  return `<g class="n ${it.cls || ''}"${it.tap ? ` data-tone="${d}"` : ''}>${tap}${g}</g>`;
+  return `<g class="n ${it.cls || ''}"${it.id ? ` id="${it.id}"` : ''}${it.tap ? ` data-tone="${d}"` : ''}>${tap}${g}</g>`;
 };
 const staffSVG = (clef, items, o = {}) => {
-  const W = 400, H = o.h || 224, bd = CL[clef].bd, Y = (d) => BY - (d - bd) * STEP;
+  const W = o.vb ? o.vb[2] : 400, H = o.h || 224, bd = CL[clef].bd, Y = (d) => BY - (d - bd) * STEP;
   const vb = o.vb || [0, 0, W, H];
-  let s = `<svg class="staff" viewBox="${vb.join(' ')}" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="חמשה">`;
+  let s = `<svg class="staff${o.cls ? ' ' + o.cls : ''}" viewBox="${vb.join(' ')}" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="חמשה">`;
   for (let i = 0; i < 5; i++) s += `<line class="sl" x1="6" x2="${W - 6}" y1="${BY - i * GAP}" y2="${BY - i * GAP}"/>`;
   s += `<line class="sl" x1="6" x2="6" y1="${BY - 4 * GAP}" y2="${BY}"/>`;
   s += clefGlyph(clef);
-  if (o.hits) {
-    for (const d of o.hits) {
-      s += `<circle class="guide" cx="388" cy="${Y(d)}" r="2.5"/>`;
-      s += `<rect class="hit" data-hit="${d}" x="60" y="${Y(d) - STEP}" width="340" height="${STEP * 2}"/>`;
-    }
-  }
+  if (o.hits) for (const d of o.hits) s += `<circle class="guide" cx="${W - 12}" cy="${Y(d)}" r="2.5"/>`;
   for (const it of items) s += noteSVG(clef, it);
   return s + '</svg>';
 };
@@ -410,6 +405,7 @@ function gameHTML() {
     <div id="prompt" class="prompt"></div>
     <div id="stage" class="stage"></div>
     <div id="msg" class="msg"></div>
+    <button id="ok" class="next ok" data-act="confirm" hidden>אישור ✓</button>
     <button id="next" class="next" data-act="next" hidden>המשך ›</button>
     ${pad}${hint}`;
 }
@@ -438,7 +434,7 @@ function pickNote(clef, pool, prev, boost) {
 function nextQ() {
   if (!G || G.over) return;
   G.locked = false; G.hinted = false;
-  $('next').hidden = true; $('next').textContent = 'המשך ›'; $('msg').textContent = ''; $('msg').className = 'msg';
+  $('ok').hidden = true; $('next').hidden = true; $('next').textContent = 'המשך ›'; $('msg').textContent = ''; $('msg').className = 'msg';
   document.querySelectorAll('.pad button').forEach((b) => b.className = '');
   const clef = pickClef();
   if (G.mode === 'locate') {
@@ -446,7 +442,7 @@ function nextQ() {
     const letters = [...new Set(pool.map(letterOf))].filter((l) => l !== G.prev);
     const target = letters[Math.floor(Math.random() * letters.length)];
     G.prev = target;
-    G.q = { clef, target, placed: null, reveal: [] };
+    G.q = { clef, target, placed: null, pending: null, reveal: [] };
   } else if (G.mode === 'chain') {
     const pool = poolFor('chain', clef), notes = [];
     for (let i = 0; i < G.k; i++) notes.push(pickNote(clef, pool, notes[i - 1]));
@@ -468,10 +464,13 @@ function drawQ() {
   const q = G.q;
   if (G.mode === 'locate') {
     const hits = rangeOf(q.clef, S.settings.range === 'extended');
-    const items = [];
-    if (q.placed != null) items.push({ d: q.placed, x: 170, cls: q.okPlaced ? 'ok' : 'bad', label: nm(q.placed) });
-    q.reveal.forEach((d, i) => items.push({ d, x: 250 + i * 55, cls: 'ok ghost', label: nm(d) }));
-    $('stage').innerHTML = staffSVG(q.clef, items, { hits: q.placed == null ? hits : [] });
+    const bd = CL[q.clef].bd, Y = (d) => BY - (d - bd) * STEP;
+    const top = Y(hits[hits.length - 1]) - 24, bot = Y(hits[0]) + 24, ly = bot + 18;
+    const items = [], N = { stem: false, ly };
+    if (q.placed != null) items.push({ ...N, d: q.placed, x: 170, cls: q.okPlaced ? 'ok' : 'bad', label: nm(q.placed) });
+    else if (q.pending != null) items.push({ ...N, d: q.pending, x: 170, cls: 'cur', id: 'pv' });
+    q.reveal.forEach((d, i) => items.push({ ...N, d, x: 215 + i * 42, cls: 'ok ghost', label: nm(d) }));
+    $('stage').innerHTML = staffSVG(q.clef, items, { hits: q.placed == null ? hits : [], vb: [0, top, 330, bot + 28 - top], cls: 'loc' });
     $('prompt').innerHTML = `מצאו את התו <b>${NAMES[q.target]}</b> על החמשה`;
     return;
   }
@@ -594,6 +593,26 @@ function chainAfter(ok) {
   save(); setTimeout(nextQ, 900);
 }
 
+// staff y -> diatonic index of the nearest line/space (whole staff is the target; no pixel-exact tapping)
+function locateAt(svg, ev) {
+  const q = G.q, bd = CL[q.clef].bd, pt = svg.createSVGPoint();
+  pt.x = ev.clientX; pt.y = ev.clientY;
+  const y = pt.matrixTransform(svg.getScreenCTM().inverse()).y;
+  const r = rangeOf(q.clef, S.settings.range === 'extended');
+  return Math.max(r[0], Math.min(r[r.length - 1], bd + Math.round((BY - y) / STEP)));
+}
+function locatePreview(d) {
+  const q = G.q; if (d === q.pending) return;
+  ac(); q.pending = d; playNote(d, 0.8, 0.25); buzz(8);
+  const svg = $('stage').querySelector('svg'), old = svg.querySelector('#pv');
+  const html = noteSVG(q.clef, { d, x: 170, cls: 'cur', id: 'pv', stem: false });
+  if (old) old.outerHTML = html; else svg.insertAdjacentHTML('beforeend', html);
+  $('ok').hidden = false; $('msg').textContent = 'גררו כדי לתקן, ואז לחצו אישור'; $('msg').className = 'msg';
+}
+function locateConfirm() {
+  if (G && G.mode === 'locate' && !G.locked && G.q.pending != null) { $('ok').hidden = true; locateTap(G.q.pending); }
+}
+
 function locateTap(d) {
   if (!G || G.locked || G.mode !== 'locate' || G.over) return;
   ac();
@@ -649,6 +668,7 @@ const act = (a, v, el) => {
     case 'settings': openModal(settingsHTML()); break;
     case 'closeModal': closeModal(); render(); break;
     case 'ans': answer(Number(v)); break;
+    case 'confirm': locateConfirm(); break;
     case 'next': if (G && !$('next').hidden) nextQ(); break;
     case 'hint': hint(); break;
     case 'introOk': closeModal(); nextQ(); break;
@@ -663,10 +683,22 @@ const act = (a, v, el) => {
 };
 
 document.addEventListener('click', (e) => {
-  const hit = e.target.closest('[data-hit]'); if (hit) return locateTap(Number(hit.dataset.hit));
   const tn = e.target.closest('[data-tone]'); if (tn) { ac(); return playNote(Number(tn.dataset.tone), 1.0); }
   const el = e.target.closest('[data-act]'); if (el) act(el.dataset.act, el.dataset.v, el);
 });
+
+let dragging = false;
+document.addEventListener('pointerdown', (e) => {
+  const svg = e.target.closest && e.target.closest('svg.loc');
+  if (!svg || !G || G.mode !== 'locate' || G.locked || G.over) return;
+  dragging = true; try { svg.setPointerCapture(e.pointerId); } catch (_) {}
+  locatePreview(locateAt(svg, e));
+});
+document.addEventListener('pointermove', (e) => {
+  if (!dragging) return;
+  const svg = $('stage').querySelector('svg.loc'); if (svg && G && !G.locked) locatePreview(locateAt(svg, e));
+});
+['pointerup', 'pointercancel'].forEach((t) => document.addEventListener(t, () => { dragging = false; }));
 
 document.addEventListener('change', (e) => {
   const k = e.target.dataset && e.target.dataset.set; if (!k) return;
@@ -681,6 +713,7 @@ document.addEventListener('keydown', (e) => {
   if (!G || e.metaKey || e.ctrlKey || e.altKey) return;
   const i = LETTERS.indexOf(e.key.toUpperCase());
   if (i >= 0 && e.key.length === 1) return answer(i);
+  if ((e.key === 'Enter' || e.key === ' ') && !$('ok').hidden) { e.preventDefault(); return locateConfirm(); }
   if ((e.key === 'Enter' || e.key === ' ') && !$('next').hidden) { e.preventDefault(); nextQ(); }
 });
 

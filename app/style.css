@@ -90,7 +90,8 @@ small { color: var(--muted); }
 .n.bad .nh { fill: var(--bad); } .n.bad .st { stroke: var(--bad); } .n.bad .lb { fill: var(--bad); }
 .n.ghost { opacity: .55; }
 .tapzone { fill: transparent; cursor: pointer; }
-.hit { fill: transparent; cursor: pointer; }
+.staff.loc { touch-action: none; cursor: pointer; }
+.next.ok { background: var(--ok); color: #fff; }
 .guide { fill: var(--line); }
 .msg { min-height: 26px; text-align: center; margin: 8px 0 6px; font-weight: 600; }
 .msg.ok { color: var(--ok); } .msg.bad { color: var(--bad); }
