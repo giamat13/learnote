@@ -40,6 +40,7 @@ const DEF = () => ({
   path: { bass: { n: 1, pts: 0, done: false }, treble: { n: 1, pts: 0, done: false } },
   stats: { bass: {}, treble: {} },
   totals: { answers: 0, correct: 0, bestStreak: 0, days: [], sessions: 0, score: 0, time: {} },
+  hist: { daily: {}, sess: [], conf: { bass: {}, treble: {} }, modes: {}, hours: new Array(24).fill(0), fastest: null },
   chainBest: { bass: 1, treble: 1 },
   sprintBest: { bass: 0, treble: 0, both: 0 },
 });
@@ -64,7 +65,7 @@ const activity = () => {
   const now = Date.now(), gap = now - lastAct; lastAct = now;
   if (document.visibilityState !== 'visible' || gap <= 0 || gap > IDLE_MS) return;
   const T = S.totals.time || (S.totals.time = {}), k = today();
-  T[k] = (T[k] || 0) + gap / 1000;
+  T[k] = (T[k] || 0) + gap / 1000; if (G) G.act = (G.act || 0) + gap / 1000;
   if (now - lastTimeSave > 5000) {
     lastTimeSave = now;
     const ks = Object.keys(T); if (ks.length > 400) ks.sort().slice(0, ks.length - 400).forEach((x) => delete T[x]);
@@ -394,6 +395,84 @@ function refHTML() {
     <p style="text-align:center;color:var(--muted)">לחצו על תו כדי לשמוע אותו</p>${body}`;
 }
 
+const MODE_NAME = { path: 'מסלול', chain: 'שרשרת', sprint: 'ספרינט', locate: 'מצא על החמשה', free: 'חופשי', weak: 'חיזוק' };
+const pct = (a, b) => (b ? Math.round(a / b * 100) : 0);
+const dayLabel = (k) => k.slice(8) + '/' + k.slice(5, 7);
+function totalsSummary() {
+  const H = S.hist, T = S.totals.time || {}, days = Object.values(H.daily);
+  const n = days.reduce((a, x) => a + x.n, 0), ok = days.reduce((a, x) => a + x.ok, 0), ms = days.reduce((a, x) => a + x.ms, 0);
+  const sec = Object.values(T).reduce((a, x) => a + x, 0), act = Object.values(T).filter((x) => x >= 30).length;
+  const ss = H.sess, ssec = ss.reduce((a, x) => a + x.sec, 0);
+  return { n, ok, avgMs: ok ? ms / ok : 0, sec, act, sessions: S.totals.sessions, avgSess: ss.length ? ssec / ss.length : 0, avgDay: act ? sec / act : 0 };
+}
+function moreStatsHTML() {
+  const H = S.hist, t = totalsSummary(), T = S.totals.time || {};
+  const tile = (b, sm) => `<div class="tile"><b>${b}</b><small>${sm}</small></div>`;
+  const overview = `<div class="card"><b>📈 סיכום כללי</b><div class="tiles">
+    ${tile(t.act, 'ימי תרגול')}${tile(fmtT(t.sec), 'זמן פעיל כולל')}${tile(fmtT(t.avgDay), 'ממוצע ליום תרגול')}
+    ${tile(t.sessions, 'סבבי תרגול')}${tile(fmtT(t.avgSess), 'ממוצע לסבב')}${tile(t.n, 'תשובות')}
+    ${tile(pct(t.ok, t.n) + '%', 'דיוק כללי')}${tile(t.avgMs ? (t.avgMs / 1000).toFixed(1) + ' שנ׳' : '—', 'זמן תגובה ממוצע')}${tile(S.totals.bestStreak, 'רצף נכון שיא')}</div></div>`;
+  const dd = [...Array(14).keys()].map((i) => { const k = dayKey(13 - i), x = H.daily[k]; return { k, a: x ? pct(x.ok, x.n) : null, n: x ? x.n : 0 }; });
+  const acc = `<div class="card"><b>🎯 דיוק לפי יום</b> <small>· 14 ימים אחרונים</small><div class="bars" style="margin-top:10px">${dd.filter((x) => x.n).map((x) => `<div class="brow"><span>${dayLabel(x.k)}</span><div class="track"><i style="width:${Math.max(x.a, 4)}%;background:${x.a >= 85 ? 'var(--ok)' : x.a >= 60 ? 'var(--warm)' : 'var(--bad)'}"></i></div><span class="tm">${x.a}% · ${x.n}</span></div>`).join('') || '<small>עדיין אין נתונים</small>'}</div></div>`;
+  const modes = Object.entries(H.modes).sort((a, b) => b[1].n - a[1].n);
+  const byMode = `<div class="card"><b>🧩 לפי סוג תרגול</b><div class="bars" style="margin-top:10px">${modes.map(([m, x]) => `<div class="brow"><span>${MODE_NAME[m] || m}</span><div class="track"><i style="width:${Math.max(pct(x.ok, x.n), 4)}%;background:var(--accent)"></i></div><span class="tm">${pct(x.ok, x.n)}% · ${x.n}</span></div>`).join('') || '<small>עדיין אין נתונים</small>'}</div></div>`;
+  const hmax = Math.max(1, ...H.hours);
+  const hours = `<div class="card"><b>🕒 באילו שעות מתרגלים</b><div class="hbars" dir="ltr">${H.hours.map((v, h) => `<div title="${h}:00 · ${v}"><i style="height:${Math.max(v / hmax * 100, v ? 6 : 2)}%"></i><small>${h % 6 === 0 ? h : ''}</small></div>`).join('')}</div></div>`;
+  const conf = [];
+  for (const c of clefsShown()) for (const [k, v] of Object.entries(H.conf[c])) { const [a, b] = k.split('>').map(Number); conf.push({ c, a, b, v }); }
+  conf.sort((x, y) => y.v - x.v);
+  const mist = `<div class="card"><b>🔀 הטעויות הנפוצות</b> <small>· מה בלבלת עם מה</small><div class="chips">${conf.slice(0, 8).map((x) => `<span class="chip" style="color:var(--bad)">${NAMES[x.a]} ← ${NAMES[x.b]} · ${x.v}</span>`).join('') || '<small>עדיין אין טעויות. כל הכבוד</small>'}</div></div>`;
+  const bestSec = Object.entries(T).sort((a, b) => b[1] - a[1])[0], bestAns = Object.entries(H.daily).sort((a, b) => b[1].n - a[1].n)[0];
+  const f = H.fastest;
+  const recs = `<div class="card"><b>🏆 שיאים</b><div class="tiles">
+    ${tile(f ? (f.ms / 1000).toFixed(2) + ' שנ׳' : '—', f ? 'התשובה המהירה ' + nm(f.d) : 'התשובה המהירה')}
+    ${tile(bestSec ? fmtT(bestSec[1]) : '—', bestSec ? 'יום תרגול ארוך ' + dayLabel(bestSec[0]) : 'יום תרגול ארוך')}
+    ${tile(bestAns ? bestAns[1].n : '—', bestAns ? 'הכי הרבה תשובות ' + dayLabel(bestAns[0]) : 'הכי הרבה תשובות')}
+    ${tile(Math.max(S.sprintBest.bass || 0, S.sprintBest.treble || 0, S.sprintBest.both || 0), 'ספרינט שיא')}
+    ${tile(Math.max(S.chainBest.bass || 1, S.chainBest.treble || 1), 'שרשרת שיא')}${tile(dayStreak(), 'ימים ברצף')}</div></div>`;
+  const hist = `<div class="card"><b>🗂️ סבבים אחרונים</b><div class="bars" style="margin-top:10px">${H.sess.slice(-8).reverse().map((x) => { const d = new Date(x.ts); return `<div class="srow"><span>${dayLabel(dayKeyOf(d))} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}</span><span>${MODE_NAME[x.mode] || x.mode}</span><span class="tm">${x.ok}/${x.n} · ${fmtT(x.sec)}</span></div>`; }).join('') || '<small>עדיין אין סבבים</small>'}</div></div>`;
+  const data = `<div class="card"><b>💾 שמירה וייצוא</b><small style="display:block;margin:4px 0 8px;color:var(--muted)">הנתונים נשמרים במכשיר הזה בלבד. אפשר לשמור גיבוי או לייצא לאקסל.</small>
+    <div class="btnrow"><button class="ghost" data-act="exportJson">⬇️ גיבוי JSON</button><button class="ghost" data-act="exportCsv">📊 ייצוא CSV</button><button class="ghost" data-act="importJson">⬆️ שחזור מגיבוי</button></div>
+    <input id="imp" type="file" accept=".json,application/json" hidden></div>`;
+  return overview + acc + byMode + hours + mist + recs + hist + data;
+}
+const dayKeyOf = (d) => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+const download = (name, text, type) => {
+  const u = URL.createObjectURL(new Blob([text], { type })), a = document.createElement('a');
+  a.href = u; a.download = name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(u), 3000);
+};
+const csvCell = (v) => { v = String(v == null ? '' : v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
+const csvRows = (rows) => rows.map((r) => r.map(csvCell).join(',')).join('\n');
+function exportCsv() {
+  const H = S.hist, T = S.totals.time || {};
+  const keys = [...new Set([...Object.keys(H.daily), ...Object.keys(T)])].sort();
+  const daily = [['date', 'active_seconds', 'answers', 'correct', 'accuracy_pct', 'avg_response_ms'],
+    ...keys.map((k) => { const x = H.daily[k] || { n: 0, ok: 0, ms: 0 }; return [k, Math.round(T[k] || 0), x.n, x.ok, pct(x.ok, x.n), x.ok ? Math.round(x.ms / x.ok) : '']; })];
+  const notes = [['clef', 'note', 'hebrew_name', 'answers', 'correct', 'accuracy_pct', 'avg_response_ms']];
+  for (const c of ['bass', 'treble']) for (const [d, x] of Object.entries(S.stats[c])) notes.push([c, sci(+d), nm(+d), x.n, x.ok, pct(x.ok, x.n), x.ok ? Math.round(x.t / x.ok) : '']);
+  const sess = [['start', 'mode', 'clef', 'answers', 'correct', 'score', 'active_seconds', 'wall_seconds'],
+    ...H.sess.map((x) => [new Date(x.ts).toISOString(), x.mode, x.clef, x.n, x.ok, x.score, x.sec, x.wall])];
+  const mist = [['clef', 'target_note', 'answered_note', 'count']];
+  for (const c of ['bass', 'treble']) for (const [k, v] of Object.entries(H.conf[c])) { const [a, b] = k.split('>').map(Number); mist.push([c, NAMES[a], NAMES[b], v]); }
+  const out = '\ufeff# daily\n' + csvRows(daily) + '\n\n# notes\n' + csvRows(notes) + '\n\n# sessions\n' + csvRows(sess) + '\n\n# mistakes\n' + csvRows(mist) + '\n';
+  download('learnote-' + today() + '.csv', out, 'text/csv;charset=utf-8');
+}
+function exportJson() {
+  download('learnote-backup-' + today() + '.json', JSON.stringify({ app: 'learnote', version: VER, exported: new Date().toISOString(), data: S }, null, 1), 'application/json');
+}
+function importJson(file) {
+  const fr = new FileReader();
+  fr.onload = () => {
+    try {
+      const j = JSON.parse(fr.result), d = j && j.data;
+      if (!j || j.app !== 'learnote' || !d || !d.totals || !d.stats) throw new Error('bad');
+      if (!confirm('לשחזר מהגיבוי? ההתקדמות הנוכחית תוחלף.')) return;
+      S = merge(DEF(), d); save(); render(); toast('השחזור הושלם ✅');
+    } catch (e) { alert('הקובץ אינו גיבוי תקין של האפליקציה.'); }
+  };
+  fr.readAsText(file);
+}
+
 function timeHTML() {
   const days = [0, 1, 2, 3, 4, 5, 6].map((i) => ({ k: dayKey(i), v: secOn(dayKey(i)) })).reverse();
   const mx = Math.max(60, ...days.map((x) => x.v)), tot = days.reduce((a, x) => a + x.v, 0);
@@ -426,6 +505,7 @@ function statsHTML() {
     ${tabs}
     <div class="stat-row"><div><b>${S.chainBest[c]}</b><small>שרשרת שיא</small></div><div><b>${sprint}</b><small>ספרינט שיא</small></div><div><b>${S.totals.bestStreak}</b><small>רצף נכון שיא</small></div></div>
     ${timeHTML()}
+    ${moreStatsHTML()}
     ${weakHTML}
     <div class="card"><b>🏅 הישגים</b> <small>· ${Object.keys(S.badges).length} מתוך ${BADGES.length}</small><div class="badges">${BADGES.map(([id, icon, name, desc]) => `<div class="badge ${S.badges[id] ? 'on' : ''}" title="${desc}"><span>${icon}</span><b>${name}</b><small>${desc}</small></div>`).join('')}</div></div>
     <div class="card"><b>${CL[c].name}</b> <small>· דיוק וזמן תגובה ממוצע</small><div class="bars" style="margin-top:10px">${rows.map(bar).join('')}</div></div>`;
@@ -462,6 +542,10 @@ function stopGame() { if (timer) { clearInterval(timer); timer = null; } if (qt)
 
 function endSession() {
   if (!G || G.ended) return; G.ended = true;
+  if (G.answers) {
+    const sl = S.hist.sess; sl.push({ ts: G.t0, mode: G.mode, clef: S.clef, n: G.answers, ok: G.correct, score: G.score, sec: Math.round(G.act || 0), wall: Math.round((Date.now() - G.t0) / 1000) });
+    if (sl.length > 200) sl.splice(0, sl.length - 200);
+  }
   if (G.answers) track('session_end', { mode: G.mode, clef: S.clef, answers: G.answers, correct: G.correct, duration_s: Math.round((Date.now() - G.t0) / 1000) });
   save();
 }
@@ -631,7 +715,15 @@ function record(clef, d, ok, ms) {
   s.e = (s.e == null ? (ok ? 1 : 0) : s.e * 0.7 + (ok ? 0.3 : 0)); // recent accuracy (recent answers count more)
   S.totals.answers++; if (ok) S.totals.correct++;
   markDay();
+  const H = S.hist, dk = today(), D = H.daily[dk] || (H.daily[dk] = { n: 0, ok: 0, ms: 0 });
+  D.n++; if (ok) { D.ok++; D.ms += Math.min(ms, 15000); }
+  const mk = (G && G.mode) || 'free', M = H.modes[mk] || (H.modes[mk] = { n: 0, ok: 0 });
+  M.n++; if (ok) M.ok++;
+  H.hours[new Date().getHours()]++;
+  if (ok && ms > 150 && (!H.fastest || ms < H.fastest.ms)) H.fastest = { ms: Math.round(ms), d, clef, day: dk };
+  const ks = Object.keys(H.daily); if (ks.length > 400) ks.sort().slice(0, ks.length - 400).forEach((x) => delete H.daily[x]);
 }
+const bumpConf = (clef, target, chosen) => { const c = S.hist.conf[clef], k = target + '>' + chosen; c[k] = (c[k] || 0) + 1; };
 
 function answer(i) {
   if (!G || G.locked || G.over || isLoc()) return;
@@ -648,7 +740,7 @@ function answer(i) {
     const p = award(ms, hinted), mult = G.streak >= 5 ? ` · x${(1 + Math.min(2, Math.floor(G.streak / 5) * 0.5)).toFixed(1)}` : '';
     msg(hinted ? 'נכון (עם רמז, בלי נקודות)' : `${ms < 2000 ? 'מהיר! ⚡ ' : 'נכון! '}+${p}${mult}`, 'ok');
   } else {
-    G.streak = 0; review(clef, d, false); if (btn) btn.classList.add('bad'); padBtn(letterOf(d)).classList.add('ok'); q.res[q.idx] = 'bad';
+    G.streak = 0; review(clef, d, false); if (i >= 0) bumpConf(clef, letterOf(d), i); if (btn) btn.classList.add('bad'); padBtn(letterOf(d)).classList.add('ok'); q.res[q.idx] = 'bad';
     setTimeout(() => playNote(d), 200); buzz(60);
     msg(`${i === -1 ? 'נגמר הזמן! ' : ''}זה היה ${nm(d)} (${sci(d)})`, 'bad');
   }
@@ -760,7 +852,7 @@ function locateTap(d) {
     G.streak = 0; buzz(60);
     q.reveal = rangeOf(q.clef, S.settings.range === 'extended').filter((x) => letterOf(x) === q.target).slice(0, 3);
     msg(`לחצת על ${nm(d)}. ${NAMES[q.target]} נמצא בירוק:`, 'bad'); drawQ();
-    review(q.clef, q.tgt, true);
+    review(q.clef, q.tgt, true); bumpConf(q.clef, q.target, letterOf(d));
     if (G.mode === 'path') { pathProgress(q.clef, false, ms); G.retry = q.tgt; G.retryClef = q.clef; G.retryLoc = true; $('next').textContent = 'נסו שוב ›'; }
     hud(); $('next').hidden = false;
   }
@@ -809,6 +901,9 @@ const act = (a, v, el) => {
     case 'hint': hint(); break;
     case 'introOk': closeModal(); nextQ(); break;
     case 'weak': closeModal(); startGame('weak'); break;
+    case 'exportJson': exportJson(); break;
+    case 'exportCsv': exportCsv(); break;
+    case 'importJson': { const i = $('imp'); if (i) i.click(); break; }
     case 'report': {
       const txt = timeReport(14);
       const done = () => toast('הדוח הועתק 📋');
@@ -846,6 +941,7 @@ document.addEventListener('pointermove', (e) => {
 ['pointerup', 'pointercancel'].forEach((t) => document.addEventListener(t, () => { dragging = false; }));
 
 document.addEventListener('change', (e) => {
+  if (e.target.id === 'imp') { const f = e.target.files && e.target.files[0]; e.target.value = ''; if (f) importJson(f); return; }
   const k = e.target.dataset && e.target.dataset.set; if (!k) return;
   const v = e.target.type === 'checkbox' ? e.target.checked : e.target.value;
   S.settings[k] = (k === 'speed' || k === 'qtime') ? Number(v) : v; save();
