@@ -33,9 +33,9 @@ One-time setup: repo **Settings → Pages → Source: GitHub Actions**.
 
 ## Google Analytics
 
-Either edit `app/config.js` and replace `G-XXXXXXXXXX` with your GA4 Measurement ID, or (no code change)
-set a repository variable: **Settings → Secrets and variables → Actions → Variables → New variable**,
-name `GA_MEASUREMENT_ID`, value `G-…`. The deploy workflow injects it at publish time.
+Analytics is configured in `app/config.js`. By default it loads a Google Tag Manager container (`LEARNOTE_GTM_ID`);
+the container must hold a Google tag with your GA4 Measurement ID. To skip GTM, clear `LEARNOTE_GTM_ID` and set
+`LEARNOTE_GA_ID` to a `G-…` ID. Forks should replace the container ID with their own.
 Events sent: `app_open`, `screen_view`, `mode_start`, `answer`, `note_unlocked`, `level_up`,
 `badge_earned`, `sprint_end`, `session_end`, and a few more. No personal data is sent.
 

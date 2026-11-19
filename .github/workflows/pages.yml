@@ -31,18 +31,6 @@ jobs:
           node --check app/app.js
           node --check app/sw.js
 
-      - name: Set Google Analytics ID (optional)
-        env:
-          GA_ID: ${{ vars.GA_MEASUREMENT_ID }}
-        run: |
-          if [ -n "$GA_ID" ]; then
-            if ! echo "$GA_ID" | grep -Eq '^G-[A-Z0-9]{6,}$'; then echo "Invalid GA_MEASUREMENT_ID"; exit 1; fi
-            sed -i "s/G-XXXXXXXXXX/$GA_ID/" app/config.js
-            echo "GA ID injected"
-          else
-            echo "GA_MEASUREMENT_ID not set, analytics stays off"
-          fi
-
       - uses: actions/configure-pages@v5
 
       - uses: actions/upload-pages-artifact@v3
