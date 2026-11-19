@@ -39,7 +39,7 @@ const DEF = () => ({
   badges: {},
   path: { bass: { n: 1, pts: 0, done: false }, treble: { n: 1, pts: 0, done: false } },
   stats: { bass: {}, treble: {} },
-  totals: { answers: 0, correct: 0, bestStreak: 0, days: [], sessions: 0, score: 0 },
+  totals: { answers: 0, correct: 0, bestStreak: 0, days: [], sessions: 0, score: 0, time: {} },
   chainBest: { bass: 1, treble: 1 },
   sprintBest: { bass: 0, treble: 0, both: 0 },
 });
@@ -55,6 +55,32 @@ let S = load();
 const save = () => { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) {} };
 const today = () => { const t = new Date(); return t.getFullYear() + '-' + String(t.getMonth() + 1).padStart(2, '0') + '-' + String(t.getDate()).padStart(2, '0'); };
 const markDay = () => { const t = today(); const ds = S.totals.days; if (ds[ds.length - 1] !== t) { ds.push(t); if (ds.length > 400) ds.shift(); } };
+/* ============ active practice time ============
+   Counts only time the user is really doing something: the gap between two interactions counts when it is
+   at most IDLE_MS (30 s) and the page is visible. Longer gaps (away from the screen) are not counted. */
+const IDLE_MS = 30000;
+let lastAct = 0, lastTimeSave = 0;
+const activity = () => {
+  const now = Date.now(), gap = now - lastAct; lastAct = now;
+  if (document.visibilityState !== 'visible' || gap <= 0 || gap > IDLE_MS) return;
+  const T = S.totals.time || (S.totals.time = {}), k = today();
+  T[k] = (T[k] || 0) + gap / 1000;
+  if (now - lastTimeSave > 5000) {
+    lastTimeSave = now;
+    const ks = Object.keys(T); if (ks.length > 400) ks.sort().slice(0, ks.length - 400).forEach((x) => delete T[x]);
+    save();
+  }
+};
+['pointerdown', 'keydown', 'touchstart', 'wheel', 'scroll'].forEach((t) => window.addEventListener(t, activity, { passive: true, capture: true }));
+const dayKey = (back) => { const t = new Date(); t.setDate(t.getDate() - back); return t.getFullYear() + '-' + String(t.getMonth() + 1).padStart(2, '0') + '-' + String(t.getDate()).padStart(2, '0'); };
+const secOn = (k) => (S.totals.time && S.totals.time[k]) || 0;
+const fmtT = (sec) => { const m = Math.round(sec / 60); return sec < 60 ? Math.round(sec) + ' שנ׳' : m < 60 ? m + ' דק׳' : Math.floor(m / 60) + ' ש׳ ' + (m % 60 ? (m % 60) + ' דק׳' : ''); };
+const timeReport = (n = 14) => {
+  const rows = []; let tot = 0, act = 0;
+  for (let i = n - 1; i >= 0; i--) { const k = dayKey(i), v = secOn(k); tot += v; if (v >= 30) act++; rows.push(`${k.split('-').reverse().join('/')}  ${v >= 30 ? fmtT(v) : '—'}`); }
+  return `דוח תרגול · קוראים תווים\n(זמן פעיל בלבד, הפסקה מעל 30 שניות לא נספרת)\n\n${rows.join('\n')}\n\nסה״כ ${n} ימים: ${fmtT(tot)}${act ? ` · ממוצע ביום תרגול: ${fmtT(tot / act)}` : ''}`;
+};
+
 const dayStreak = () => {
   const ds = S.totals.days; if (!ds.length) return 0;
   const one = 86400000; const parse = (s) => { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d).getTime(); };
@@ -327,6 +353,7 @@ function homeHTML() {
     <div><b>🔥 ${dayStreak()}</b><small>ימים ברצף</small></div>
     <div><b>${acc}%</b><small>דיוק כללי</small></div>
     <div><b>${S.totals.answers}</b><small>תשובות</small></div>
+    <div><b style="font-size:17px;white-space:nowrap">${fmtT(secOn(today()))}</b><small>⏱ תרגול היום</small></div>
   </div>
   ${prog}
   ${weakNotes().length ? `<div class="card"><b>כדאי לחזק</b><div class="chips">${weakNotes().map((r) => `<span class="chip" style="color:var(--bad)">${nm(r.d)} ${sci(r.d)}</span>`).join('')}</div></div>` : ''}
@@ -367,6 +394,16 @@ function refHTML() {
     <p style="text-align:center;color:var(--muted)">לחצו על תו כדי לשמוע אותו</p>${body}`;
 }
 
+function timeHTML() {
+  const days = [0, 1, 2, 3, 4, 5, 6].map((i) => ({ k: dayKey(i), v: secOn(dayKey(i)) })).reverse();
+  const mx = Math.max(60, ...days.map((x) => x.v)), tot = days.reduce((a, x) => a + x.v, 0);
+  const row = (x) => `<div class="brow"><span>${x.k.slice(8)}/${x.k.slice(5, 7)}</span><div class="track"><i style="width:${x.v ? Math.max(x.v / mx * 100, 4) : 0}%;background:var(--accent)"></i></div><span class="tm">${x.v >= 30 ? fmtT(x.v) : '—'}</span></div>`;
+  return `<div class="card"><b>⏱ זמן תרגול פעיל</b> <small>· היום ${fmtT(secOn(today()))} · 7 ימים ${fmtT(tot)}</small>
+    <div class="bars" style="margin-top:10px">${days.map(row).join('')}</div>
+    <small style="display:block;margin-top:8px;color:var(--muted)">נספר רק כשיש פעילות. הפסקה של מעל 30 שניות לא נספרת.</small>
+    <button class="ghost" style="width:100%;margin-top:8px" data-act="report">📋 העתקת דוח (14 ימים)</button></div>`;
+}
+
 function statsHTML() {
   const shown = clefsShown();
   if (!shown.includes(statsTab)) statsTab = shown[0];
@@ -388,6 +425,7 @@ function statsHTML() {
   return `<header class="top"><button class="ghost" data-act="home">‹ חזרה</button><h1>📊 התקדמות</h1><span style="width:60px"></span></header>
     ${tabs}
     <div class="stat-row"><div><b>${S.chainBest[c]}</b><small>שרשרת שיא</small></div><div><b>${sprint}</b><small>ספרינט שיא</small></div><div><b>${S.totals.bestStreak}</b><small>רצף נכון שיא</small></div></div>
+    ${timeHTML()}
     ${weakHTML}
     <div class="card"><b>🏅 הישגים</b> <small>· ${Object.keys(S.badges).length} מתוך ${BADGES.length}</small><div class="badges">${BADGES.map(([id, icon, name, desc]) => `<div class="badge ${S.badges[id] ? 'on' : ''}" title="${desc}"><span>${icon}</span><b>${name}</b><small>${desc}</small></div>`).join('')}</div></div>
     <div class="card"><b>${CL[c].name}</b> <small>· דיוק וזמן תגובה ממוצע</small><div class="bars" style="margin-top:10px">${rows.map(bar).join('')}</div></div>`;
@@ -771,6 +809,13 @@ const act = (a, v, el) => {
     case 'hint': hint(); break;
     case 'introOk': closeModal(); nextQ(); break;
     case 'weak': closeModal(); startGame('weak'); break;
+    case 'report': {
+      const txt = timeReport(14);
+      const done = () => toast('הדוח הועתק 📋');
+      if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(txt).then(done, () => prompt('העתיקו את הדוח:', txt));
+      else prompt('העתיקו את הדוח:', txt);
+      break;
+    }
     case 'again': closeModal(); startGame('sprint'); break;
     case 'install':
       if (deferredPrompt) { deferredPrompt.prompt(); deferredPrompt.userChoice.then((r) => { track('install_prompt', { outcome: r.outcome }); deferredPrompt = null; render(); }); }
@@ -795,6 +840,7 @@ document.addEventListener('pointerdown', (e) => {
 });
 document.addEventListener('pointermove', (e) => {
   if (!dragging) return;
+  activity();
   const svg = $('stage').querySelector('svg.loc'); if (svg && G && !G.locked) locatePreview(locateAt(svg, e));
 });
 ['pointerup', 'pointercancel'].forEach((t) => document.addEventListener(t, () => { dragging = false; }));
