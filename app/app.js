@@ -80,20 +80,53 @@ const ac = () => {
   if (AC && AC.state === 'suspended') AC.resume();
   return AC;
 };
+let NOISE = null;
+const noiseBuf = (c) => {
+  if (!NOISE || NOISE.sampleRate !== c.sampleRate) {
+    NOISE = c.createBuffer(1, Math.floor(c.sampleRate * 0.04), c.sampleRate);
+    const ch = NOISE.getChannelData(0);
+    for (let i = 0; i < ch.length; i++) ch[i] = Math.random() * 2 - 1;
+  }
+  return NOISE;
+};
+// Piano-like tone: stacked sine partials (upper ones slightly sharp, as on a real string),
+// each decaying faster than the one below; two detuned strings on the lowest partials;
+// a soft hammer click; and a low-pass that closes as the note fades.
 const playNote = (d, dur = 0.8, vol = 0.3) => {
   if (!S.settings.sound) return;
   const c = ac(); if (!c) return;
-  const t = c.currentTime, f = freqOf(midiOf(d));
-  const g = c.createGain();
-  g.gain.setValueAtTime(0.0001, t);
-  g.gain.exponentialRampToValueAtTime(vol, t + 0.012);
-  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-  g.connect(c.destination);
-  [[1, 'triangle', 1], [2, 'sine', 0.55], [3, 'sine', 0.2]].forEach(([mul, type, amp]) => {
-    const o = c.createOscillator(), og = c.createGain();
-    o.type = type; o.frequency.value = f * mul; og.gain.value = amp;
-    o.connect(og); og.connect(g); o.start(t); o.stop(t + dur + 0.05);
+  const t = c.currentTime, f0 = freqOf(midiOf(d));
+  const out = c.createGain(); out.connect(c.destination);
+  const body = c.createBiquadFilter(); body.type = 'lowpass';
+  body.frequency.setValueAtTime(Math.min(12000, Math.max(1500, f0 * 14)), t);
+  body.frequency.setTargetAtTime(Math.min(3000, Math.max(300, f0 * 4)), t, dur * 0.35 + 0.05);
+  body.connect(out);
+  const tau = dur * 0.8 + 0.12, life = tau * 4.5 + 0.1; // ~1% level when the oscillators stop
+  const amps = [1, 0.55, 0.3, 0.17, 0.1, 0.06], sum = amps.reduce((a, b) => a + b, 0), B = 0.0004;
+  amps.forEach((a, i) => {
+    const k = i + 1, fk = k * f0 * Math.sqrt(1 + B * k * k);
+    if (fk > 16000) return;
+    const decay = tau / (1 + i * 1.3);
+    const strings = i < 2 ? [-1.2, 1.2] : [0]; // cents
+    strings.forEach((cents) => {
+      const o = c.createOscillator(), g = c.createGain();
+      o.type = 'sine';
+      o.frequency.value = fk * Math.pow(2, cents / 1200);
+      const peak = (vol * 1.6 * a / sum) / strings.length;
+      g.gain.setValueAtTime(0, t);
+      g.gain.linearRampToValueAtTime(peak, t + 0.004);
+      g.gain.setTargetAtTime(0, t + 0.004, decay);
+      o.connect(g); g.connect(body);
+      o.start(t); o.stop(t + life);
+    });
   });
+  const hammer = c.createBufferSource(); hammer.buffer = noiseBuf(c);
+  const bp = c.createBiquadFilter(); bp.type = 'bandpass';
+  bp.frequency.value = Math.min(5000, Math.max(1500, f0 * 30)); bp.Q.value = 1.5;
+  const hg = c.createGain();
+  hg.gain.setValueAtTime(vol * 0.25, t); hg.gain.setTargetAtTime(0, t, 0.008);
+  hammer.connect(bp); bp.connect(hg); hg.connect(out);
+  hammer.start(t); hammer.stop(t + 0.04);
 };
 const buzz = (ms) => { try { if (navigator.vibrate) navigator.vibrate(ms); } catch (e) {} };
 
@@ -342,7 +375,7 @@ function endSession() {
 function startGame(mode) {
   stopGame();
   S.totals.sessions++; markDay(); save();
-  G = { mode, score: 0, streak: 0, answers: 0, correct: 0, t0: Date.now(), locked: false, prev: null, q: null, k: Math.max(1, Math.min(S.chainBest[S.clef] || 1, 3)), over: false, ended: false };
+  G = { mode, score: 0, streak: 0, answers: 0, correct: 0, t0: Date.now(), locked: false, prev: null, retry: null, q: null, k: Math.max(1, Math.min(S.chainBest[S.clef] || 1, 3)), over: false, ended: false };
   if (mode === 'chain') G.k = 1;
   view = 'game';
   root.innerHTML = gameHTML();
@@ -405,7 +438,7 @@ function pickNote(clef, pool, prev, boost) {
 function nextQ() {
   if (!G || G.over) return;
   G.locked = false; G.hinted = false;
-  $('next').hidden = true; $('msg').textContent = ''; $('msg').className = 'msg';
+  $('next').hidden = true; $('next').textContent = 'המשך ›'; $('msg').textContent = ''; $('msg').className = 'msg';
   document.querySelectorAll('.pad button').forEach((b) => b.className = '');
   const clef = pickClef();
   if (G.mode === 'locate') {
@@ -420,7 +453,9 @@ function nextQ() {
     G.q = { clef, notes, idx: 0, res: notes.map(() => '') };
   } else {
     const pool = poolFor(G.mode, clef), n = S.path[clef].n;
-    const d = pickNote(clef, pool, G.prev, G.mode === 'path' && n > 1 ? pool[pool.length - 1] : -1);
+    // path: a wrong answer repeats the same note until it is answered correctly
+    const d = G.retry != null ? G.retry : pickNote(clef, pool, G.prev, G.mode === 'path' && n > 1 ? pool[pool.length - 1] : -1);
+    G.retry = null;
     G.prev = d;
     G.q = { clef, notes: [d], idx: 0, res: [''] };
   }
@@ -499,7 +534,10 @@ function answer(i) {
     if (G.pendingIntro) { const intro = G.pendingIntro; G.pendingIntro = null; setTimeout(() => showIntro(intro), 450); }
     else setTimeout(nextQ, G.mode === 'sprint' ? 220 : 520);
   } else if (G.mode === 'sprint') setTimeout(nextQ, 650);
-  else { $('next').hidden = false; }
+  else {
+    if (G.mode === 'path') { G.retry = d; $('next').textContent = 'נסו שוב ›'; }
+    $('next').hidden = false;
+  }
   save();
 }
 
