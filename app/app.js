@@ -182,6 +182,7 @@ let timer = null;
 let qt = null;
 
 const $ = (id) => document.getElementById(id);
+const isLoc = () => !!(G && G.q && G.q.loc); // current question is a 'find it on the staff' one
 const pickClef = () => (S.clef === 'both' ? (Math.random() < 0.5 ? 'bass' : 'treble') : S.clef);
 const needPts = () => Number(S.settings.speed) || 3;
 
@@ -244,6 +245,13 @@ const render = () => {
 
 const clefsShown = () => (S.clef === 'both' ? ['bass', 'treble'] : [S.clef]);
 
+// weakest practised notes across the clefs in use (shared by home, sprint summary and the weak-spots mode)
+function weakNotes(limit = 3) {
+  const rows = [];
+  for (const c of clefsShown()) for (const [d, x] of Object.entries(S.stats[c])) if (x.n >= 3) rows.push({ d: Number(d), x, a: (x.ok / x.n + (x.e == null ? x.ok / x.n : x.e)) / 2 });
+  return rows.filter((r) => r.a < 0.85).sort((a, b) => a.a - b.a).slice(0, limit);
+}
+
 function homeHTML() {
   const seg = [['bass', 'מפתח פה (בס)'], ['treble', 'מפתח סול'], ['both', 'שניהם']]
     .map(([k, t]) => `<button class="${S.clef === k ? 'on' : ''}" data-act="clef" data-v="${k}">${t}</button>`).join('');
@@ -270,8 +278,10 @@ function homeHTML() {
     <div><b>${S.totals.answers}</b><small>תשובות</small></div>
   </div>
   ${prog}
+  ${weakNotes().length ? `<div class="card"><b>כדאי לחזק</b><div class="chips">${weakNotes().map((r) => `<span class="chip" style="color:var(--bad)">${nm(r.d)} ${sci(r.d)}</span>`).join('')}</div></div>` : ''}
   <div class="modes">
     <button class="mode wide" data-act="mode" data-v="path"><b>🧭 מסלול למידה</b><span>מתחילים בתו אחד. כל תשובה נכונה ומהירה פותחת עוד תו.</span></button>
+    ${weakNotes().length ? `<button class="mode wide" data-act="mode" data-v="weak"><b>💪 חיזוק חולשות</b><span>רק התווים שמתקשים בהם, בשאלות ובחיפוש על החמשה.</span></button>` : ''}
     <button class="mode" data-act="mode" data-v="chain"><b>🔗 שרשרת</b><span>כל הצלחה מוסיפה עוד תו לרצף.</span></button>
     <button class="mode" data-act="mode" data-v="sprint"><b>⏱ ספרינט</b><span>60 שניות, כמה תוכל?</span></button>
     <button class="mode" data-act="mode" data-v="locate"><b>🎯 מצא על החמשה</b><span>נתנו שם, תלחצ/י על המקום.</span></button>
@@ -379,7 +389,7 @@ function startGame(mode) {
     if (!G || G.over || G.locked || !G.q) return;
     const el = (performance.now() - G.qStart) / 1000, lim = Number(S.settings.qtime), h = $('h-time');
     if (!h) return;
-    if (lim > 0 && G.mode !== 'sprint' && G.mode !== 'locate') {
+    if (lim > 0 && G.mode !== 'sprint' && !isLoc()) {
       const left = lim - el; h.textContent = '⏱ ' + Math.max(0, left).toFixed(1); h.classList.toggle('low', left < 3);
       if (left <= 0) answer(-1);
     } else { h.textContent = '⏱ ' + el.toFixed(1); h.classList.remove('low'); }
@@ -412,6 +422,11 @@ function gameHTML() {
 
 const poolFor = (mode, clef) => {
   if (mode === 'path') return CL[clef].path.slice(0, S.path[clef].n);
+  if (mode === 'weak') { // the unlocked notes that are weakest (low accuracy, slow, or barely practised)
+    const un = CL[clef].path.slice(0, S.path[clef].n), st = S.stats[clef];
+    const sc = (d) => { const x = st[d]; return !x || x.n < 3 ? 0.5 : (x.ok / x.n + (x.e == null ? x.ok / x.n : x.e)) / 2 - Math.min(x.ok ? x.t / x.ok : 6000, 8000) / 40000; };
+    return un.slice().sort((a, b) => sc(a) - sc(b)).slice(0, Math.max(2, Math.ceil(un.length / 2)));
+  }
   if (mode === 'chain') return CL[clef].path.slice(0, Math.max(S.path[clef].n, 4));
   return rangeOf(clef, S.settings.range === 'extended');
 };
@@ -423,7 +438,7 @@ function pickNote(clef, pool, prev, boost) {
     if (d === prev) return 0;
     const s = st[d]; let w;
     if (!s || !s.n) w = 2.5;
-    else { const acc = s.ok / s.n, avg = s.ok ? s.t / s.ok : 6000; w = 1 + (1 - acc) * 4 + Math.min(avg, 8000) / 4000; }
+    else { const acc = (s.ok / s.n + (s.e == null ? s.ok / s.n : s.e)) / 2, avg = s.ok ? s.t / s.ok : 6000; w = 1 + (1 - acc) * 4 + Math.min(avg, 8000) / 4000; }
     return d === boost ? w * 2.5 : w;
   });
   let r = Math.random() * ws.reduce((a, b) => a + b, 0);
@@ -436,25 +451,36 @@ function nextQ() {
   G.locked = false; G.hinted = false;
   $('ok').hidden = true; $('next').hidden = true; $('next').textContent = 'המשך ›'; $('msg').textContent = ''; $('msg').className = 'msg';
   document.querySelectorAll('.pad button').forEach((b) => b.className = '');
-  const clef = pickClef();
-  if (G.mode === 'locate') {
-    const pool = rangeOf(clef, S.settings.range === 'extended');
-    const letters = [...new Set(pool.map(letterOf))].filter((l) => l !== G.prev);
-    const target = letters[Math.floor(Math.random() * letters.length)];
-    G.prev = target;
-    G.q = { clef, target, placed: null, pending: null, reveal: [] };
+  G.qn = (G.qn || 0) + 1;
+  // spaced review: a note answered wrong comes back 2-4 questions later, in the same kind of exercise
+  const due = G.mode !== 'chain' && G.retry == null && (G.rev || []).find((r) => r.at <= G.qn);
+  if (due) G.rev.splice(G.rev.indexOf(due), 1);
+  const clef = G.retry != null ? G.retryClef : due ? due.clef : pickClef();
+  const pn = S.path[clef].n, mixed = G.mode === 'path' || G.mode === 'weak';
+  // path / weak-spots mix naming a note with finding it on the staff
+  const asLoc = G.mode === 'locate' || (mixed && pn > 1 && (G.retry != null ? G.retryLoc : due ? due.loc : Math.random() < (G.mode === 'weak' ? 0.5 : 0.35)));
+  const padEl = document.querySelector('.pad'); if (padEl) padEl.style.display = asLoc ? 'none' : '';
+  const hintEl = document.querySelector('.hint'); if (hintEl) hintEl.style.display = asLoc ? 'none' : '';
+  const boost = G.mode === 'path' && pn > 1 ? CL[clef].path[pn - 1] : -1;
+  const chosen = G.retry != null ? G.retry : due ? due.d : null;
+  const rv = !!due;
+  if (asLoc) {
+    const pool = G.mode === 'locate' ? rangeOf(clef, S.settings.range === 'extended') : poolFor(G.mode, clef);
+    const d = chosen != null ? chosen : pickNote(clef, pool, G.prev, boost);
+    G.prev = d;
+    G.q = { clef, loc: true, rev: rv, tgt: d, target: letterOf(d), placed: null, pending: null, reveal: [] };
   } else if (G.mode === 'chain') {
     const pool = poolFor('chain', clef), notes = [];
     for (let i = 0; i < G.k; i++) notes.push(pickNote(clef, pool, notes[i - 1]));
     G.q = { clef, notes, idx: 0, res: notes.map(() => '') };
   } else {
-    const pool = poolFor(G.mode, clef), n = S.path[clef].n;
+    const pool = poolFor(G.mode, clef);
     // path: a wrong answer repeats the same note until it is answered correctly
-    const d = G.retry != null ? G.retry : pickNote(clef, pool, G.prev, G.mode === 'path' && n > 1 ? pool[pool.length - 1] : -1);
-    G.retry = null;
+    const d = chosen != null ? chosen : pickNote(clef, pool, G.prev, boost);
     G.prev = d;
-    G.q = { clef, notes: [d], idx: 0, res: [''] };
+    G.q = { clef, rev: rv, notes: [d], idx: 0, res: [''] };
   }
+  G.retry = null; G.retryLoc = false;
   G.qStart = performance.now();
   drawQ(); hud();
   if (S.settings.autoplay && G.q.notes) playNote(G.q.notes[G.q.idx], 0.7, 0.25);
@@ -462,7 +488,7 @@ function nextQ() {
 
 function drawQ() {
   const q = G.q;
-  if (G.mode === 'locate') {
+  if (q.loc) {
     const hits = rangeOf(q.clef, S.settings.range === 'extended');
     const bd = CL[q.clef].bd, Y = (d) => BY - (d - bd) * STEP;
     const top = Y(hits[hits.length - 1]) - 24, bot = Y(hits[0]) + 24, ly = bot + 18;
@@ -471,7 +497,7 @@ function drawQ() {
     else if (q.pending != null) items.push({ ...N, d: q.pending, x: 170, cls: 'cur', id: 'pv' });
     q.reveal.forEach((d, i) => items.push({ ...N, d, x: 215 + i * 42, cls: 'ok ghost', label: nm(d) }));
     $('stage').innerHTML = staffSVG(q.clef, items, { hits: q.placed == null ? hits : [], vb: [0, top, 330, bot + 28 - top], cls: 'loc' });
-    $('prompt').innerHTML = `מצאו את התו <b>${NAMES[q.target]}</b> על החמשה`;
+    $('prompt').innerHTML = `${q.rev ? '🔁 ' : ''}מצאו את התו <b>${NAMES[q.target]}</b> על החמשה`;
     return;
   }
   const n = q.notes.length;
@@ -485,6 +511,8 @@ function drawQ() {
   if (G.mode === 'path') $('prompt').innerHTML = `${CL[q.clef].name} · תו ${S.path[q.clef].n} מתוך ${CL[q.clef].path.length}`;
   else if (G.mode === 'chain') $('prompt').innerHTML = `שרשרת של <b>${G.k}</b> · מה התו ה-${q.idx + 1}?`;
   else if (G.mode === 'free') $('prompt').textContent = `${CL[q.clef].name} · איזה תו זה?`;
+  else if (G.mode === 'weak') $('prompt').textContent = `${q.rev ? '🔁 ' : ''}חיזוק · איזה תו זה?`;
+  if (G.mode === 'path' && q.rev) $('prompt').innerHTML = '🔁 חזרה · ' + $('prompt').innerHTML;
 }
 
 function hud() {
@@ -493,21 +521,27 @@ function hud() {
   if (G.mode === 'path') {
     const c = G.q.clef, P = S.path[c];
     $('bar').style.width = (CL[c].path.length === P.n && P.done ? 100 : Math.min(P.pts / needPts(), 1) * 100) + '%';
-  } else if (G.mode === 'chain') $('bar').style.width = (G.k / 8 * 100) + '%';
+  } else if (G.mode === 'weak') $('bar').style.width = (G.answers ? G.correct / G.answers * 100 : 0) + '%';
+  else if (G.mode === 'chain') $('bar').style.width = (G.k / 8 * 100) + '%';
 }
 
 const padBtn = (i) => document.querySelector(`.pad button[data-v="${i}"]`);
 const msg = (t, cls) => { $('msg').textContent = t; $('msg').className = 'msg ' + (cls || ''); };
 
+function review(clef, d, loc) {
+  (G.rev = G.rev || []).push({ clef, d, loc, at: (G.qn || 0) + 2 + Math.floor(Math.random() * 3) });
+}
+
 function record(clef, d, ok, ms) {
   const s = S.stats[clef][d] || (S.stats[clef][d] = { n: 0, ok: 0, t: 0 });
   s.n++; if (ok) { s.ok++; s.t += Math.min(ms, 15000); }
+  s.e = (s.e == null ? (ok ? 1 : 0) : s.e * 0.7 + (ok ? 0.3 : 0)); // recent accuracy (recent answers count more)
   S.totals.answers++; if (ok) S.totals.correct++;
   markDay();
 }
 
 function answer(i) {
-  if (!G || G.locked || G.over || G.mode === 'locate') return;
+  if (!G || G.locked || G.over || isLoc()) return;
   ac();
   const q = G.q, d = q.notes[q.idx], clef = q.clef;
   const ok = letterOf(d) === i, ms = performance.now() - G.qStart, hinted = G.hinted;
@@ -521,7 +555,7 @@ function answer(i) {
     const p = award(ms, hinted), mult = G.streak >= 5 ? ` · x${(1 + Math.min(2, Math.floor(G.streak / 5) * 0.5)).toFixed(1)}` : '';
     msg(hinted ? 'נכון (עם רמז, בלי נקודות)' : `${ms < 2000 ? 'מהיר! ⚡ ' : 'נכון! '}+${p}${mult}`, 'ok');
   } else {
-    G.streak = 0; if (btn) btn.classList.add('bad'); padBtn(letterOf(d)).classList.add('ok'); q.res[q.idx] = 'bad';
+    G.streak = 0; if (G.mode !== 'chain') review(clef, d, false); if (btn) btn.classList.add('bad'); padBtn(letterOf(d)).classList.add('ok'); q.res[q.idx] = 'bad';
     setTimeout(() => playNote(d), 200); buzz(60);
     msg(`${i === -1 ? 'נגמר הזמן! ' : ''}זה היה ${nm(d)} (${sci(d)})`, 'bad');
   }
@@ -534,7 +568,7 @@ function answer(i) {
     else setTimeout(nextQ, G.mode === 'sprint' ? 220 : 520);
   } else if (G.mode === 'sprint') setTimeout(nextQ, 650);
   else {
-    if (G.mode === 'path') { G.retry = d; $('next').textContent = 'נסו שוב ›'; }
+    if (G.mode === 'path') { G.retry = d; G.retryClef = clef; G.retryLoc = false; $('next').textContent = 'נסו שוב ›'; }
     $('next').hidden = false;
   }
   save();
@@ -610,31 +644,37 @@ function locatePreview(d) {
   $('ok').hidden = false; $('msg').textContent = 'גררו כדי לתקן, ואז לחצו אישור'; $('msg').className = 'msg';
 }
 function locateConfirm() {
-  if (G && G.mode === 'locate' && !G.locked && G.q.pending != null) { $('ok').hidden = true; locateTap(G.q.pending); }
+  if (G && isLoc() && !G.locked && G.q.pending != null) { $('ok').hidden = true; locateTap(G.q.pending); }
 }
 
 function locateTap(d) {
-  if (!G || G.locked || G.mode !== 'locate' || G.over) return;
+  if (!G || G.locked || !isLoc() || G.over) return;
   ac();
   const q = G.q, ok = letterOf(d) === q.target, ms = performance.now() - G.qStart;
   G.locked = true; G.answers++; q.placed = d; q.okPlaced = ok;
-  S.totals.answers++; if (ok) S.totals.correct++; markDay();
-  track('locate', { clef: q.clef, target: LETTERS[q.target], correct: ok, time_ms: Math.round(ms) });
+  record(q.clef, q.tgt, ok, ms);
+  track('locate', { mode: G.mode, clef: q.clef, target: sci(q.tgt), correct: ok, time_ms: Math.round(ms) });
   playNote(d);
   if (ok) {
     G.correct++; G.streak++; S.totals.bestStreak = Math.max(S.totals.bestStreak, G.streak);
     const p = award(ms, false);
-    msg(`${ms < 3000 ? 'בול! ⚡ ' : 'נכון! '}+${p}`, 'ok'); drawQ(); hud(); checkBadges({ ok: true, ms }); setTimeout(nextQ, 700);
+    msg(`${ms < 3000 ? 'בול! ⚡ ' : 'נכון! '}+${p}`, 'ok'); drawQ(); checkBadges({ ok: true, ms });
+    if (G.mode === 'path') pathProgress(q.clef, true, ms);
+    hud();
+    if (G.pendingIntro) { const intro = G.pendingIntro; G.pendingIntro = null; setTimeout(() => showIntro(intro), 450); } else setTimeout(nextQ, 700);
   } else {
     G.streak = 0; buzz(60);
     q.reveal = rangeOf(q.clef, S.settings.range === 'extended').filter((x) => letterOf(x) === q.target).slice(0, 3);
-    msg(`לחצת על ${nm(d)}. ${NAMES[q.target]} נמצא בירוק:`, 'bad'); drawQ(); hud(); $('next').hidden = false;
+    msg(`לחצת על ${nm(d)}. ${NAMES[q.target]} נמצא בירוק:`, 'bad'); drawQ();
+    review(q.clef, q.tgt, true);
+    if (G.mode === 'path') { pathProgress(q.clef, false, ms); G.retry = q.tgt; G.retryClef = q.clef; G.retryLoc = true; $('next').textContent = 'נסו שוב ›'; }
+    hud(); $('next').hidden = false;
   }
   save();
 }
 
 function hint() {
-  if (!G || G.locked || G.over || G.mode === 'locate' || G.mode === 'sprint') return;
+  if (!G || G.locked || G.over || isLoc() || G.mode === 'sprint') return;
   const d = G.q.notes[G.q.idx]; G.hinted = true;
   const b = padBtn(letterOf(d)); b.classList.add('hintflash');
   msg('זה התו המסומן. רמז לא נספר כהצלחה.', '');
@@ -649,9 +689,11 @@ function endSprint() {
   if (isBest) S.sprintBest[key] = G.correct;
   track('sprint_end', { clef: S.clef, score: G.correct, points: G.score, accuracy: acc, best: isBest });
   endSession(); checkBadges({});
+  const wk = weakNotes(3);
   openModal(`<h2>⏱ הזמן נגמר</h2>
     <p class="big"><b>${G.correct}</b> תשובות נכונות · ⭐ ${G.score} נק׳</p>
     <p style="text-align:center">דיוק ${acc}% · ${isBest ? '🏅 שיא חדש!' : 'שיא: ' + prevBest}</p>
+    ${wk.length ? `<p style="text-align:center;color:var(--bad)">כדאי לחזק: ${wk.map((r) => nm(r.d) + ' ' + sci(r.d)).join(' · ')}</p><button class="ghost" style="width:100%;margin-bottom:8px" data-act="weak">💪 חיזוק חולשות</button>` : ''}
     <button class="primary" data-act="again">עוד סיבוב</button>
     <button class="ghost" style="width:100%;margin-top:8px" data-act="home">חזרה לתפריט</button>`);
 }
@@ -672,6 +714,7 @@ const act = (a, v, el) => {
     case 'next': if (G && !$('next').hidden) nextQ(); break;
     case 'hint': hint(); break;
     case 'introOk': closeModal(); nextQ(); break;
+    case 'weak': closeModal(); startGame('weak'); break;
     case 'again': closeModal(); startGame('sprint'); break;
     case 'install':
       if (deferredPrompt) { deferredPrompt.prompt(); deferredPrompt.userChoice.then((r) => { track('install_prompt', { outcome: r.outcome }); deferredPrompt = null; render(); }); }
@@ -690,7 +733,7 @@ document.addEventListener('click', (e) => {
 let dragging = false;
 document.addEventListener('pointerdown', (e) => {
   const svg = e.target.closest && e.target.closest('svg.loc');
-  if (!svg || !G || G.mode !== 'locate' || G.locked || G.over) return;
+  if (!svg || !isLoc() || G.locked || G.over) return;
   dragging = true; try { svg.setPointerCapture(e.pointerId); } catch (_) {}
   locatePreview(locateAt(svg, e));
 });
@@ -706,7 +749,7 @@ document.addEventListener('change', (e) => {
   S.settings[k] = (k === 'speed' || k === 'qtime') ? Number(v) : v; save();
   if (k === 'analytics') applyConsent();
   else track('setting_change', { key: k, value: String(v) });
-  if (k === 'letters' && G && G.mode !== 'locate') { root.innerHTML = gameHTML(); drawQ(); hud(); }
+  if (k === 'letters' && G && !isLoc()) { root.innerHTML = gameHTML(); drawQ(); hud(); }
 });
 
 document.addEventListener('keydown', (e) => {
