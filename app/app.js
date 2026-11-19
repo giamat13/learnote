@@ -101,42 +101,63 @@ const playNote = (d, dur = 0.8, vol = 0.3) => {
   if (c.state === 'running') voice(c, c.destination, d, dur, vol);
   else c.resume().then(() => voice(c, c.destination, d, dur, vol)).catch(() => {});
 };
+// Short room impulse (decaying noise): the dry synth alone sounds like a plucked string; a little
+// soundboard/room tail is what makes it read as a piano.
+let IR = null;
+const irBuf = (c) => {
+  if (!IR || IR.sampleRate !== c.sampleRate) {
+    const n = Math.floor(c.sampleRate * 0.9); IR = c.createBuffer(1, n, c.sampleRate);
+    const ch = IR.getChannelData(0); let lp = 0;
+    for (let i = 0; i < n; i++) { lp += 0.35 * ((Math.random() * 2 - 1) - lp); ch[i] = lp * Math.exp(-i / (c.sampleRate * 0.16)); }
+  }
+  return IR;
+};
+// Piano model: hammer strikes at ~1/7.5 of the string (shapes the partial amplitudes), stretched partials
+// (inharmonicity), 2-3 slightly detuned strings per key on the lowest partials (beating), a two-stage decay
+// (fast drop, then a long quiet ring), upper partials that arrive a few ms later and die sooner, a closing
+// low-pass and a soft hammer click. Low notes lean on their upper partials so phone speakers can play them.
 const voice = (c, dest, d, dur, vol) => {
-  const t = c.currentTime, f0 = freqOf(midiOf(d));
+  const t = c.currentTime, m = midiOf(d), f0 = freqOf(m);
+  const pos = Math.max(0, Math.min(1, (m - 36) / 60)); // 0 = low register .. 1 = high
   const out = c.createGain(); out.connect(dest);
+  const wet = c.createGain(); wet.gain.value = 0.2; const room = c.createConvolver(); room.buffer = irBuf(c);
+  out.connect(room); room.connect(wet); wet.connect(dest);
   const body = c.createBiquadFilter(); body.type = 'lowpass';
-  body.frequency.setValueAtTime(Math.min(12000, Math.max(3000, f0 * 14)), t);
-  body.frequency.setTargetAtTime(Math.min(3500, Math.max(1500, f0 * 5)), t, dur * 0.35 + 0.05);
+  body.frequency.setValueAtTime(Math.min(9000, Math.max(4000, f0 * 18)), t);
+  body.frequency.setTargetAtTime(Math.min(4000, Math.max(1800, f0 * 7)), t, 0.35);
   body.connect(out);
-  const tau = dur * 0.8 + 0.12, life = tau * 4.5 + 0.1; // ~1% level when the oscillators stop
-  const base = [1, 0.55, 0.3, 0.17, 0.1, 0.06, 0.04, 0.025], B = 0.0004;
-  const small = (fk) => (fk < 150 ? 0.25 : fk < 300 ? 0.25 + 0.75 * (fk - 150) / 150 : 1); // small-speaker weighting
-  const amps = base.slice(0, f0 < 200 ? 8 : 6).map((a, i) => a * small((i + 1) * f0));
-  const sum = amps.reduce((a, b) => a + b, 0);
+  const B = 0.00012 + 0.0009 * (1 - pos); // lower strings are stiffer: more stretched partials
+  const N = Math.max(6, Math.min(14, Math.floor(7000 / f0)));
+  const small = (fk) => (fk < 150 ? 0.3 : fk < 260 ? 0.3 + 0.7 * (fk - 150) / 110 : 1);
+  const amps = [];
+  for (let k = 1; k <= N; k++) amps.push((Math.abs(Math.sin(Math.PI * k / 7.5)) + 0.05) / Math.pow(k, 0.9) * small(k * f0));
+  const sum = amps.reduce((a, b) => a + b, 0), len = 0.7 + dur * 0.4;
   amps.forEach((a, i) => {
     const k = i + 1, fk = k * f0 * Math.sqrt(1 + B * k * k);
-    if (fk > 16000) return;
-    const decay = tau / (1 + i * 1.3);
-    const strings = i < 2 ? [-1.2, 1.2] : [0]; // cents
-    strings.forEach((cents) => {
+    if (fk > 15000) return;
+    const tA = t + 0.003 + 0.0015 * k;
+    const Tf = 0.22 / (1 + 0.45 * (k - 1)), Ts = (0.45 + 0.55 * (1 - pos)) * len / (1 + 0.3 * (k - 1));
+    const life = (tA - t) + 3 * Tf + 4.6 * Ts + 0.05;
+    const cents = k === 1 ? (pos > 0.35 ? [-1.8, 0, 1.6] : [-1.2, 1.2]) : k === 2 ? [-1, 1] : [0];
+    cents.forEach((ct) => {
       const o = c.createOscillator(), g = c.createGain();
-      o.type = 'sine';
-      o.frequency.value = fk * Math.pow(2, cents / 1200);
-      const peak = (vol * 2.2 * a / sum) / strings.length;
+      o.type = 'sine'; o.frequency.value = fk * Math.pow(2, ct / 1200);
+      const peak = (vol * 2.2 * a / sum) / cents.length;
       g.gain.setValueAtTime(0, t);
-      g.gain.linearRampToValueAtTime(peak, t + 0.004);
-      g.gain.setTargetAtTime(0, t + 0.004, decay);
+      g.gain.linearRampToValueAtTime(peak, tA);
+      g.gain.setTargetAtTime(peak * 0.5, tA, Tf);        // fast drop to about half...
+      g.gain.setTargetAtTime(0, tA + 3 * Tf, Ts);         // ...then the long quiet ring
       o.connect(g); g.connect(body);
       o.start(t); o.stop(t + life);
     });
   });
   const hammer = c.createBufferSource(); hammer.buffer = noiseBuf(c);
   const bp = c.createBiquadFilter(); bp.type = 'bandpass';
-  bp.frequency.value = Math.min(5000, Math.max(1500, f0 * 30)); bp.Q.value = 1.5;
+  bp.frequency.value = Math.min(4000, Math.max(1200, f0 * 24)); bp.Q.value = 1.2;
   const hg = c.createGain();
-  hg.gain.setValueAtTime(vol * 0.25, t); hg.gain.setTargetAtTime(0, t, 0.008);
+  hg.gain.setValueAtTime(vol * 0.3, t); hg.gain.setTargetAtTime(0, t, 0.01);
   hammer.connect(bp); bp.connect(hg); hg.connect(out);
-  hammer.start(t); hammer.stop(t + 0.04);
+  hammer.start(t); hammer.stop(t + 0.05);
 };
 const buzz = (ms) => { try { if (navigator.vibrate) navigator.vibrate(ms); } catch (e) {} };
 
