@@ -1,5 +1,6 @@
-const V = 'learnote-v1';
-const ASSETS = ['./', 'index.html', 'style.css', 'app.js', 'config.js', 'glyphs.js', 'manifest.webmanifest', 'icon.svg', 'icon-192.png', 'icon-512.png'];
+const V = 'learnote-v2';
+const ASSETS = ['./', 'index.html', 'style.css', 'app.js', 'config.js', 'glyphs.js', 'manifest.webmanifest', 'icon.svg', 'icon-192.png', 'icon-512.png',
+  ...['A1', 'C2', 'Ds2', 'Fs2', 'A2', 'C3', 'Ds3', 'Fs3', 'A3', 'C4', 'Ds4', 'Fs4', 'A4', 'C5', 'Ds5', 'Fs5', 'A5', 'C6'].map((n) => `piano/${n}.mp3`)];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(V).then((c) => c.addAll(ASSETS)).then(() => self.skipWaiting()));

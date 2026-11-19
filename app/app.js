@@ -78,6 +78,7 @@ let AC;
 const ac = () => {
   if (!AC) { try { AC = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {} }
   if (AC && AC.state === 'suspended') AC.resume();
+  if (AC) loadPiano(AC);
   return AC;
 };
 let NOISE = null;
@@ -98,8 +99,27 @@ const playNote = (d, dur = 0.8, vol = 0.3) => {
   if (!S.settings.sound) return;
   const c = ac(); if (!c) return;
   // a context that is still suspended (phones) has a frozen clock: start only once it is running
-  if (c.state === 'running') voice(c, c.destination, d, dur, vol);
-  else c.resume().then(() => voice(c, c.destination, d, dur, vol)).catch(() => {});
+  const go = () => { if (!sampled(c, c.destination, d, dur, vol)) voice(c, c.destination, d, dur, vol); };
+  if (c.state === 'running') go(); else c.resume().then(go).catch(() => {});
+};
+// Real piano: Salamander Grand Piano samples (one every 3 semitones, A1..C6), pitch-shifted to the
+// nearest note. Until they have loaded (or if loading fails) the synthesized voice below is used.
+const PIANO = ['A1', 'C2', 'Ds2', 'Fs2', 'A2', 'C3', 'Ds3', 'Fs3', 'A3', 'C4', 'Ds4', 'Fs4', 'A4', 'C5', 'Ds5', 'Fs5', 'A5', 'C6'];
+const PBUF = []; let pianoLoading = false;
+const loadPiano = (c) => {
+  if (pianoLoading || !window.fetch) return; pianoLoading = true;
+  PIANO.forEach((n, i) => fetch('piano/' + n + '.mp3').then((r) => r.arrayBuffer())
+    .then((ab) => new Promise((ok, no) => c.decodeAudioData(ab, ok, no))).then((b) => { PBUF[i] = b; }).catch(() => {}));
+};
+const sampled = (c, dest, d, dur, vol) => {
+  const m = midiOf(d), i = Math.max(0, Math.min(PIANO.length - 1, Math.round((m - 33) / 3)));
+  const buf = PBUF[i]; if (!buf) return false;
+  const t = c.currentTime, src = c.createBufferSource(), g = c.createGain();
+  src.buffer = buf; src.playbackRate.value = Math.pow(2, (m - (33 + i * 3)) / 12);
+  const end = t + Math.max(1.2, dur * 2.2);
+  g.gain.setValueAtTime(vol * 4.5, t); g.gain.setTargetAtTime(0, end, 0.12);
+  src.connect(g); g.connect(dest); src.start(t); src.stop(end + 0.7);
+  return true;
 };
 // Short room impulse (decaying noise): the dry synth alone sounds like a plucked string; a little
 // soundboard/room tail is what makes it read as a piano.
@@ -811,5 +831,5 @@ track('app_open', { clef: S.clef, standalone: !!(window.matchMedia && matchMedia
 track('screen_view', { screen_name: 'home' });
 
 // tiny hook for tests
-window.__learnote = { voice, S: () => S, CL, letterOf, midiOf, sci };
+window.__learnote = { voice, sampled, PBUF, S: () => S, CL, letterOf, midiOf, sci };
 })();
