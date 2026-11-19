@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="96" fill="#1f2a44"/>
+  <g stroke="#f5f2ea" stroke-width="10" stroke-linecap="round">
+    <line x1="80" x2="432" y1="150" y2="150"/>
+    <line x1="80" x2="432" y1="210" y2="210"/>
+    <line x1="80" x2="432" y1="270" y2="270"/>
+    <line x1="80" x2="432" y1="330" y2="330"/>
+    <line x1="80" x2="432" y1="390" y2="390"/>
+  </g>
+  <g transform="rotate(-20 290 300)"><ellipse cx="290" cy="300" rx="62" ry="45" fill="#ffb84d"/></g>
+  <line x1="344" x2="344" y1="288" y2="110" stroke="#ffb84d" stroke-width="14" stroke-linecap="round"/>
+</svg>

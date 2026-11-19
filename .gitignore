@@ -1,0 +1,9 @@
+node_modules/
+.DS_Store
+Thumbs.db
+*.log
+*.ttf
+.playwright-mcp/
+.agent-dashboard/
+.claude/
+*.local.json
