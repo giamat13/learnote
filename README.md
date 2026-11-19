@@ -28,9 +28,14 @@ On a phone on the same Wi-Fi, open `http://<your-computer-ip>:8080`.
 `app/` is a static site. Publish that folder with GitHub Pages, Netlify, Vercel, or any static host.
 Install-to-home-screen and offline mode need HTTPS.
 
+The workflow in `.github/workflows/pages.yml` publishes `app/` on every push to `main`.
+One-time setup: repo **Settings → Pages → Source: GitHub Actions**.
+
 ## Google Analytics
 
-Edit `app/config.js` and replace `G-XXXXXXXXXX` with your GA4 Measurement ID.
+Either edit `app/config.js` and replace `G-XXXXXXXXXX` with your GA4 Measurement ID, or (no code change)
+set a repository variable: **Settings → Secrets and variables → Actions → Variables → New variable**,
+name `GA_MEASUREMENT_ID`, value `G-…`. The deploy workflow injects it at publish time.
 Events sent: `app_open`, `screen_view`, `mode_start`, `answer`, `note_unlocked`, `level_up`,
 `badge_earned`, `sprint_end`, `session_end`, and a few more. No personal data is sent.
 
