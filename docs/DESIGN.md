@@ -4,6 +4,9 @@
   Bottom line: G2 (d=18) in bass clef, E4 (d=30) in treble clef.
 - **Learning path:** `CL[clef].path` in `app/app.js` is the unlock order. A fast answer (<3 s) earns 2 progress points, a slow one 1;
   the "unlock speed" setting (1/3/5) is the threshold. A wrong answer resets progress.
+- **Staff first:** the first 9 notes of each path are the ones on the five lines and spaces; ledger-line notes and the
+  spaces just above/below the staff come after. They stay locked (path, sprint, free practice, locate) until every staff note
+  has >= 3 answers and the average accuracy (lifetime + recent) is >= 90%. Once passed, `S.ext[clef]` stays true.
 - **Note selection:** weighted random by weakness (low accuracy, slow average), newest unlocked note boosted, no immediate repeat.
 - **Score:** `10 + speed bonus (0..10)`, multiplied by x1.0 to x3.0 by streak (every 5 correct adds 0.5). Hints earn nothing.
 - **Storage:** everything lives in `localStorage` under `learnote.v1`.
