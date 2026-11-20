@@ -42,6 +42,8 @@ const DEF = () => ({
   stats: { bass: {}, treble: {} },
   totals: { answers: 0, correct: 0, bestStreak: 0, days: [], sessions: 0, score: 0, time: {} },
   hist: { daily: {}, sess: [], conf: { bass: {}, treble: {} }, modes: {}, hours: new Array(24).fill(0), fastest: null },
+  pendLive: [], // same, written while a game is running (in case the tab is closed without ending it)
+  pend: [], // missed notes still waiting for their review, carried to the next session
   ext: { bass: false, treble: false }, // notes outside the five lines unlock after >=90% on the staff notes
   chainBest: { bass: 1, treble: 1 },
   sprintBest: { bass: 0, treble: 0, both: 0 },
@@ -573,12 +575,17 @@ function settingsHTML() {
 /* ============ game ============ */
 function stopGame() { if (timer) { clearInterval(timer); timer = null; } if (qt) { clearInterval(qt); qt = null; } if (G && !G.ended) endSession(); G = null; closeModal(); }
 
+const unresolved = () => (G ? (G.rev || []).concat(G.retry != null ? [{ clef: G.retryClef, d: G.retry, loc: !!G.retryLoc, stage: 0 }] : []) : [])
+  .map((r) => ({ clef: r.clef, d: r.d, loc: !!r.loc, stage: r.stage || 0 }));
+const dedupePend = (a) => a.filter((r, i) => a.findIndex((x) => x.clef === r.clef && x.d === r.d && x.loc === r.loc) === i).slice(-10);
 function endSession() {
   if (!G || G.ended) return; G.ended = true;
   if (G.answers) {
     const sl = S.hist.sess; sl.push({ ts: G.t0, mode: G.mode, clef: S.clef, n: G.answers, ok: G.correct, score: G.score, sec: Math.round(G.act || 0), wall: Math.round((Date.now() - G.t0) / 1000) });
     if (sl.length > 200) sl.splice(0, sl.length - 200);
   }
+  // misses that were not reviewed yet wait for the next session
+  S.pend = dedupePend((S.pend || []).concat(unresolved())); S.pendLive = [];
   if (G.answers) track('session_end', { mode: G.mode, clef: S.clef, answers: G.answers, correct: G.correct, duration_s: Math.round((Date.now() - G.t0) / 1000) });
   save();
 }
@@ -588,6 +595,13 @@ function startGame(mode) {
   S.totals.sessions++; markDay(); save();
   G = { mode, score: 0, streak: 0, answers: 0, correct: 0, t0: Date.now(), locked: false, prev: null, retry: null, q: null, k: Math.max(1, Math.min(S.chainBest[S.clef] || 1, 3)), over: false, ended: false };
   if (mode === 'chain') G.k = 1;
+  // bring back notes missed in earlier sessions (only ones this mode can show)
+  const keep = [], back = [];
+  S.pend = dedupePend((S.pend || []).concat(S.pendLive || [])); S.pendLive = [];
+  for (const r of S.pend || []) {
+    if (clefsShown().includes(r.clef) && !(r.loc && mode !== 'locate' && mode !== 'path' && mode !== 'weak') && poolFor(mode, r.clef).includes(r.d)) back.push(r); else keep.push(r);
+  }
+  S.pend = keep; G.rev = back.slice(0, 4).map((r, i) => ({ ...r, at: 2 + i * 2 })); S.pend = keep.concat(back.slice(4));
   view = 'game';
   root.innerHTML = gameHTML();
   track('mode_start', { mode, clef: S.clef });
@@ -648,6 +662,8 @@ function pickNote(clef, pool, prev, boost) {
       const acc = (s.ok / s.n + (s.e == null ? s.ok / s.n : s.e)) / 2, avg = s.ok ? s.t / s.ok : 6000; w = 1 + (1 - acc) * 4 + Math.min(avg, 8000) / 4000;
       const now = Date.now();
       if (s.ls) w += Math.min(1.5, (now - s.ls) / 864e5 * 0.5); // not seen for a while
+      const cf = S.hist.conf[clef] || {}, L = letterOf(d); let mass = 0; for (const k in cf) if (k.split('>')[0] === String(L)) mass += cf[k];
+      w += Math.min(1.5, mass / 6); // this note is often mistaken for another
       if (s.lw && now - s.lw < 864e5) w += 1.5 * (1 - (now - s.lw) / 864e5); // missed in the last day
     }
     if (G && G.recent && G.recent.includes(d)) w *= 0.25; // avoid bouncing between the same two or three notes
@@ -1049,7 +1065,7 @@ document.addEventListener('keydown', (e) => {
   if ((e.key === 'Enter' || e.key === ' ') && !$('next').hidden) { e.preventDefault(); nextQ(); }
 });
 
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') { if (G && G.answers) track('session_pause', { mode: G.mode, answers: G.answers, correct: G.correct }); save(); } });
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') { if (G) S.pendLive = unresolved(); if (G && G.answers) track('session_pause', { mode: G.mode, answers: G.answers, correct: G.correct }); save(); } });
 
 window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); deferredPrompt = e; if (view === 'home') render(); });
 window.addEventListener('appinstalled', () => { track('app_installed'); deferredPrompt = null; });
