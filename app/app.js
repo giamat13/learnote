@@ -644,7 +644,13 @@ function pickNote(clef, pool, prev, boost) {
     if (d === prev) return 0;
     const s = st[d]; let w;
     if (!s || !s.n) w = 2.5;
-    else { const acc = (s.ok / s.n + (s.e == null ? s.ok / s.n : s.e)) / 2, avg = s.ok ? s.t / s.ok : 6000; w = 1 + (1 - acc) * 4 + Math.min(avg, 8000) / 4000; }
+    else {
+      const acc = (s.ok / s.n + (s.e == null ? s.ok / s.n : s.e)) / 2, avg = s.ok ? s.t / s.ok : 6000; w = 1 + (1 - acc) * 4 + Math.min(avg, 8000) / 4000;
+      const now = Date.now();
+      if (s.ls) w += Math.min(1.5, (now - s.ls) / 864e5 * 0.5); // not seen for a while
+      if (s.lw && now - s.lw < 864e5) w += 1.5 * (1 - (now - s.lw) / 864e5); // missed in the last day
+    }
+    if (G && G.recent && G.recent.includes(d)) w *= 0.25; // avoid bouncing between the same two or three notes
     return d === boost ? w * 2.5 : w;
   });
   let r = Math.random() * ws.reduce((a, b) => a + b, 0);
@@ -669,27 +675,28 @@ function nextQ() {
   const hintEl = document.querySelector('.hint'); if (hintEl) hintEl.style.display = asLoc ? 'none' : '';
   const boost = G.mode === 'path' && pn > 1 ? CL[clef].path[pn - 1] : -1;
   const chosen = G.retry != null ? G.retry : due ? due.d : null;
-  const rv = !!due;
+  const rv = !!due, rs = due ? due.stage || 0 : -1, rd = due ? due.d : null;
   if (asLoc) {
     const pool = G.mode === 'locate' ? rangeOf(clef, extOn(clef)) : poolFor(G.mode, clef);
     const d = chosen != null ? chosen : pickNote(clef, pool, G.prev, boost);
     G.prev = d;
-    G.q = { clef, loc: true, rev: rv, tgt: d, target: letterOf(d), placed: null, pending: null, reveal: [] };
+    G.q = { clef, loc: true, rev: rv, rs, rd, tgt: d, target: letterOf(d), placed: null, pending: null, reveal: [] };
   } else if (G.mode === 'chain' || (G.mode === 'path' && pn >= 3 && chosen == null && Math.random() < 0.2)) {
     // chain: a short sequence (inside the path: 2-3 notes from the unlocked ones); a note due for review leads it
     const emb = G.mode === 'path', len = emb ? (pn >= 5 ? 3 : 2) : G.k;
     const pool = emb ? poolFor('path', clef) : poolFor('chain', clef), notes = [];
     for (let i = 0; i < len; i++) notes.push(pickNote(clef, pool, notes[i - 1]));
     if (due && pool.includes(due.d)) { notes[0] = due.d; if (notes[1] === due.d) notes[1] = pickNote(clef, pool, due.d); }
-    G.q = { clef, chain: true, emb, rev: rv, notes, idx: 0, res: notes.map(() => '') };
+    G.q = { clef, chain: true, emb, rev: rv, rs, rd, notes, idx: 0, res: notes.map(() => '') };
   } else {
     const pool = poolFor(G.mode, clef);
     // path: a wrong answer repeats the same note until it is answered correctly
     const d = chosen != null ? chosen : pickNote(clef, pool, G.prev, boost);
     G.prev = d;
-    G.q = { clef, rev: rv, notes: [d], idx: 0, res: [''] };
+    G.q = { clef, rev: rv, rs, rd, notes: [d], idx: 0, res: [''] };
   }
   G.retry = null; G.retryLoc = false;
+  G.recent = ((G.recent || []).concat(G.q.loc ? [G.q.tgt] : G.q.notes)).slice(-3);
   G.qStart = performance.now();
   drawQ(); hud();
   if (S.settings.autoplay && G.q.notes) playNote(G.q.notes[G.q.idx], 0.7, 0.25);
@@ -746,13 +753,32 @@ function hud() {
 const padBtn = (i) => document.querySelector(`.pad button[data-v="${i}"]`);
 const msg = (t, cls) => { $('msg').textContent = t; $('msg').className = 'msg ' + (cls || ''); };
 
-function review(clef, d, loc) {
-  (G.rev = G.rev || []).push({ clef, d, loc, at: (G.qn || 0) + 2 + Math.floor(Math.random() * 3) });
+// spaced review ladder: a missed note returns after ~3 questions, then ~8, then ~20 (each time it must be right to move up)
+const REV_GAPS = [3, 8, 20];
+function review(clef, d, loc, stage = 0, extra = 0) {
+  const rv = (G.rev = G.rev || []);
+  if (rv.some((r) => r.clef === clef && r.d === d && r.loc === loc)) return;
+  rv.push({ clef, d, loc, stage, at: (G.qn || 0) + REV_GAPS[stage] + extra + Math.floor(Math.random() * 3) - 1 });
+}
+const reviewUp = (q, clef, d, loc) => { if (q.rs >= 0 && q.rd === d && q.rs < REV_GAPS.length - 1) review(clef, d, loc, q.rs + 1); };
+// the note the learner picked instead, in the same neighbourhood: shown soon after, so the two get told apart
+function contrast(clef, wrongD, chosenLetter) {
+  const pool = poolFor(G.mode, clef); let best = null;
+  for (const x of pool) if (letterOf(x) === chosenLetter && x !== wrongD && (best == null || Math.abs(x - wrongD) < Math.abs(best - wrongD))) best = x;
+  if (best != null) review(clef, best, false, 0, 1);
+}
+// where the note sits, in words (counting lines from the bottom)
+function placeText(clef, d) {
+  const p = d - CL[clef].bd;
+  if (p >= 0 && p <= 8) return p % 2 === 0 ? `על קו ${p / 2 + 1} (סופרים מלמטה)` : `ברווח בין קו ${(p + 1) / 2} לקו ${(p + 1) / 2 + 1}`;
+  if (p < 0) return p % 2 === 0 ? 'על קו עזר מתחת לחמשה' : (p === -1 ? 'ברווח מתחת לחמשה' : 'ברווח בין קווי העזר מתחת לחמשה');
+  return p % 2 === 0 ? 'על קו עזר מעל החמשה' : (p === 9 ? 'ברווח מעל החמשה' : 'ברווח בין קווי העזר מעל החמשה');
 }
 
 function record(clef, d, ok, ms) {
   const s = S.stats[clef][d] || (S.stats[clef][d] = { n: 0, ok: 0, t: 0 });
-  s.n++; if (ok) { s.ok++; s.t += Math.min(ms, 15000); }
+  s.n++; if (ok) { s.ok++; s.t += Math.min(ms, 15000); } else s.lw = Date.now();
+  s.ls = Date.now();
   s.e = (s.e == null ? (ok ? 1 : 0) : s.e * 0.7 + (ok ? 0.3 : 0)); // recent accuracy (recent answers count more)
   S.totals.answers++; if (ok) S.totals.correct++;
   markDay();
@@ -778,13 +804,13 @@ function answer(i) {
   const btn = padBtn(i);
   if (ok) {
     G.correct++; G.streak++; S.totals.bestStreak = Math.max(S.totals.bestStreak, G.streak);
-    btn.classList.add('ok'); q.res[q.idx] = 'ok'; playNote(d);
+    btn.classList.add('ok'); q.res[q.idx] = 'ok'; playNote(d); if (!hinted) reviewUp(q, clef, d, false);
     const p = award(ms, hinted), mult = G.streak >= 5 ? ` · x${(1 + Math.min(2, Math.floor(G.streak / 5) * 0.5)).toFixed(1)}` : '';
     msg(hinted ? 'נכון (עם רמז, בלי נקודות)' : `${ms < 2000 ? 'מהיר! ⚡ ' : 'נכון! '}+${p}${mult}`, 'ok');
   } else {
-    G.streak = 0; review(clef, d, false); if (i >= 0) bumpConf(clef, letterOf(d), i); if (btn) btn.classList.add('bad'); padBtn(letterOf(d)).classList.add('ok'); q.res[q.idx] = 'bad';
+    G.streak = 0; review(clef, d, false); if (i >= 0) { bumpConf(clef, letterOf(d), i); contrast(clef, d, i); } if (btn) btn.classList.add('bad'); padBtn(letterOf(d)).classList.add('ok'); q.res[q.idx] = 'bad';
     setTimeout(() => playNote(d), 200); buzz(60);
-    msg(`${i === -1 ? 'נגמר הזמן! ' : ''}זה היה ${nm(d)} (${sci(d)})`, 'bad');
+    msg(`${i === -1 ? 'נגמר הזמן! ' : ''}זה היה ${nm(d)} (${sci(d)}) · ${placeText(clef, d)}${i >= 0 ? ` · בחרת ${NAMES[i]}` : ''}`, 'bad');
   }
   drawQ(); hud(); checkBadges({ ok: ok && !hinted, ms });
 
@@ -910,12 +936,13 @@ function locateTap(d) {
     if (G.mode === 'path') pathProgress(q.clef, true, ms);
     hud();
     const more = rangeOf(q.clef, extOn(q.clef)).filter((x) => letterOf(x) === q.target && x !== d);
+    reviewUp(q, q.clef, q.tgt, true);
     if (more.length) { q.bonus = true; q.found = [d]; q.pending = null; G.locked = false; $('next').textContent = 'דלג ›'; $('next').hidden = false; drawQ(); }
     else if (G.pendingIntro) { const intro = G.pendingIntro; G.pendingIntro = null; setTimeout(() => showIntro(intro), 450); } else setTimeout(nextQ, 700);
   } else {
     G.streak = 0; buzz(60);
     q.reveal = rangeOf(q.clef, extOn(q.clef)).filter((x) => letterOf(x) === q.target).slice(0, 3);
-    msg(`לחצת על ${nm(d)}. ${NAMES[q.target]} נמצא בירוק:`, 'bad'); drawQ();
+    msg(`לחצת על ${nm(d)}. ${NAMES[q.target]} נמצא בירוק (${placeText(q.clef, q.tgt)}):`, 'bad'); drawQ();
     review(q.clef, q.tgt, true); bumpConf(q.clef, q.target, letterOf(d));
     if (G.mode === 'path') { pathProgress(q.clef, false, ms); G.retry = q.tgt; G.retryClef = q.clef; G.retryLoc = true; $('next').textContent = 'נסו שוב ›'; }
     hud(); $('next').hidden = false;
