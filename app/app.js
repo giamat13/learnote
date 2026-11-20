@@ -11,12 +11,12 @@ const SEMI = [0, 2, 4, 5, 7, 9, 11];
 const CL = {
   bass: {
     name: 'מפתח פה (בס)', short: 'פה', bd: 18, min: 14, max: 30,
-    path: [24, 28, 18, 26, 22, 20, 23, 21, 25, 19, 29, 30, 17, 16, 15, 14],
+    path: [24, 18, 26, 22, 20, 23, 21, 25, 19, 27, 17, 28, 16, 29, 30, 15, 14],
     lines: 'סול · סי · רה · פה · לה', spaces: 'לה · דו · מי · סול', hand: 'בפסנתר: יד שמאל',
   },
   treble: {
     name: 'מפתח סול', short: 'סול', bd: 30, min: 26, max: 40,
-    path: [32, 28, 30, 38, 34, 36, 31, 33, 35, 37, 29, 39, 40, 27, 26],
+    path: [32, 30, 38, 34, 36, 31, 33, 35, 37, 29, 39, 28, 40, 27, 26],
     lines: 'מי · סול · סי · רה · פה', spaces: 'פה · לה · דו · מי', hand: 'בפסנתר: יד ימין',
   },
 };
@@ -26,6 +26,7 @@ const midiOf = (d) => 12 * (octaveOf(d) + 1) + SEMI[letterOf(d)];
 const freqOf = (m) => 440 * Math.pow(2, (m - 69) / 12);
 const nm = (d) => NAMES[letterOf(d)];
 const sci = (d) => LETTERS[letterOf(d)] + octaveOf(d);
+const ON_STAFF = 9, EXT_PCT = 0.9, EXT_MIN = 3; // notes on the staff; accuracy needed; min answers per note
 const rangeOf = (clef, ext) => {
   const c = CL[clef]; const lo = ext ? c.min : c.bd, hi = ext ? c.max : c.bd + 8;
   const a = []; for (let d = lo; d <= hi; d++) a.push(d); return a;
@@ -41,6 +42,7 @@ const DEF = () => ({
   stats: { bass: {}, treble: {} },
   totals: { answers: 0, correct: 0, bestStreak: 0, days: [], sessions: 0, score: 0, time: {} },
   hist: { daily: {}, sess: [], conf: { bass: {}, treble: {} }, modes: {}, hours: new Array(24).fill(0), fastest: null },
+  ext: { bass: false, treble: false }, // notes outside the five lines unlock after >=90% on the staff notes
   chainBest: { bass: 1, treble: 1 },
   sprintBest: { bass: 0, treble: 0, both: 0 },
 });
@@ -51,7 +53,18 @@ const merge = (a, b) => {
   }
   return a;
 };
-const load = () => { try { const j = JSON.parse(localStorage.getItem(KEY)); if (j) return merge(DEF(), j); } catch (e) {} return DEF(); };
+const load = () => {
+  try {
+    const j = JSON.parse(localStorage.getItem(KEY));
+    if (j) {
+      const d = merge(DEF(), j);
+      // older saves had ledger notes mixed into the path: hold them at the staff notes until the 90% gate is passed
+      for (const c of ['bass', 'treble']) if (!j.ext && d.path[c].n > ON_STAFF) { d.path[c].n = ON_STAFF; d.path[c].pts = 0; d.path[c].done = false; }
+      return d;
+    }
+  } catch (e) {}
+  return DEF();
+};
 let S = load();
 const save = () => { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) {} };
 const today = () => { const t = new Date(); return t.getFullYear() + '-' + String(t.getMonth() + 1).padStart(2, '0') + '-' + String(t.getDate()).padStart(2, '0'); };
@@ -208,6 +221,23 @@ const voice = (c, dest, d, dur, vol) => {
 };
 const buzz = (ms) => { try { if (navigator.vibrate) navigator.vibrate(ms); } catch (e) {} };
 
+/* ============ notes outside the staff: unlocked by mastering the staff notes ============ */
+// every one of the 9 notes on the lines and spaces answered >= 3 times, average (lifetime + recent) accuracy >= 90%
+function staffMastery(clef) {
+  const ds = rangeOf(clef, false); let sum = 0, seen = 0;
+  for (const d of ds) { const x = S.stats[clef][d]; if (x && x.n >= EXT_MIN) { seen++; sum += (x.ok / x.n + (x.e == null ? x.ok / x.n : x.e)) / 2; } }
+  const avg = sum / ds.length;
+  return { seen, total: ds.length, pct: Math.round(avg * 100), ready: seen === ds.length && avg >= EXT_PCT };
+}
+const extOpen = (clef) => !!S.ext[clef];
+const extOn = (clef) => S.settings.range === 'extended' && extOpen(clef);
+const pathLimit = (clef) => (extOpen(clef) ? CL[clef].path.length : ON_STAFF);
+function checkExt(clef) {
+  if (extOpen(clef) || !staffMastery(clef).ready) return;
+  S.ext[clef] = true; track('ext_unlocked', { clef });
+  toast(`🔓 נפתחו תווים מעל ומתחת לחמשה (${CL[clef].short})`);
+}
+
 /* ============ staff drawing ============ */
 const BY = 150, GAP = 16, STEP = 8; // bottom line y, line gap, half-gap
 const GL = {
@@ -336,7 +366,10 @@ function homeHTML() {
   const prog = clefsShown().map((c) => {
     const n = S.path[c].n, len = CL[c].path.length;
     const chips = CL[c].path.map((d, i) => `<span class="chip ${i < n ? 'on' : ''}">${i < n ? nm(d) : '·'}</span>`).join('');
-    return `<div class="card"><b>${CL[c].name}</b> <small>· ${n} מתוך ${len} תווים פתוחים</small><div class="chips">${chips}</div></div>`;
+    const m = staffMastery(c);
+    const gate = extOpen(c) ? '<small>🔓 תווים מחוץ לחמשה פתוחים</small>'
+      : `<div style="margin-top:8px"><small>🔒 תווים מחוץ לחמשה נפתחים ב-90% על החמשה · עכשיו ${m.pct}%${m.seen < m.total ? ` · ${m.seen}/${m.total} תווים תורגלו` : ''}</small><div class="bar" style="margin:6px 0 0"><i style="width:${Math.min(100, Math.round(m.pct / EXT_PCT / 100 * 100))}%"></i></div></div>`;
+    return `<div class="card"><b>${CL[c].name}</b> <small>· ${n} מתוך ${len} תווים פתוחים</small><div class="chips">${chips}</div>${gate}</div>`;
   }).join('');
   const acc = S.totals.answers ? Math.round((S.totals.correct / S.totals.answers) * 100) : 0;
   const ios = /iphone|ipad|ipod/i.test(navigator.userAgent) && !window.navigator.standalone;
@@ -522,7 +555,7 @@ function settingsHTML() {
     ${sw('autoplay', '🎧 נגן את התו כשהוא מופיע', 'מתאים לאימון אוזן')}
     ${sw('hints', '💡 כפתור רמז')}
     ${sw('letters', '🔤 אותיות לועזיות על הכפתורים', 'C D E F G A B')}
-    <label class="row"><span>טווח תווים בספרינט, תרגול ו"מצא"</span><select data-set="range">
+    <label class="row"><span>טווח תווים בספרינט, תרגול ו"מצא"<small>קווי עזר נפתחים אחרי 90% הצלחה בתווי החמשה</small></span><select data-set="range">
       <option value="staff" ${S.settings.range === 'staff' ? 'selected' : ''}>בתוך החמשה בלבד</option>
       <option value="extended" ${S.settings.range === 'extended' ? 'selected' : ''}>כולל קווי עזר</option></select></label>
     <label class="row"><span>קצב פתיחת תווים במסלול<small>כמה נכונות נדרשות לפתוח תו חדש</small></span><select data-set="speed">
@@ -601,7 +634,7 @@ const poolFor = (mode, clef) => {
     return un.slice().sort((a, b) => sc(a) - sc(b)).slice(0, Math.max(2, Math.ceil(un.length / 2)));
   }
   if (mode === 'chain') return CL[clef].path.slice(0, Math.max(S.path[clef].n, 4));
-  return rangeOf(clef, S.settings.range === 'extended');
+  return rangeOf(clef, extOn(clef));
 };
 
 function pickNote(clef, pool, prev, boost) {
@@ -638,7 +671,7 @@ function nextQ() {
   const chosen = G.retry != null ? G.retry : due ? due.d : null;
   const rv = !!due;
   if (asLoc) {
-    const pool = G.mode === 'locate' ? rangeOf(clef, S.settings.range === 'extended') : poolFor(G.mode, clef);
+    const pool = G.mode === 'locate' ? rangeOf(clef, extOn(clef)) : poolFor(G.mode, clef);
     const d = chosen != null ? chosen : pickNote(clef, pool, G.prev, boost);
     G.prev = d;
     G.q = { clef, loc: true, rev: rv, tgt: d, target: letterOf(d), placed: null, pending: null, reveal: [] };
@@ -662,10 +695,17 @@ function nextQ() {
   if (S.settings.autoplay && G.q.notes) playNote(G.q.notes[G.q.idx], 0.7, 0.25);
 }
 
+// path mode, all staff notes open but the 90% gate is still closed: show how close the learner is
+function gateLine(clef) {
+  if (extOpen(clef) || S.path[clef].n < ON_STAFF) return '';
+  const m = staffMastery(clef);
+  return `<br><small>לפתיחת תווים מחוץ לחמשה: 90% על תווי החמשה · עכשיו ${m.pct}%${m.seen < m.total ? ` · עוד ${m.total - m.seen} תווים לתרגל לפחות ${EXT_MIN} פעמים` : ''}</small>`;
+}
+
 function drawQ() {
   const q = G.q;
   if (q.loc) {
-    const hits = rangeOf(q.clef, S.settings.range === 'extended');
+    const hits = rangeOf(q.clef, extOn(q.clef));
     const bd = CL[q.clef].bd, Y = (d) => BY - (d - bd) * STEP;
     const top = Y(hits[hits.length - 1]) - 24, bot = Y(hits[0]) + 24, ly = bot + 18;
     const items = [], N = { stem: false, ly };
@@ -684,7 +724,7 @@ function drawQ() {
     label: q.res[i] ? nm(d) : '',
   }));
   $('stage').innerHTML = staffSVG(q.clef, items);
-  if (G.mode === 'path') $('prompt').innerHTML = `${CL[q.clef].name} · תו ${S.path[q.clef].n} מתוך ${CL[q.clef].path.length}`;
+  if (G.mode === 'path') $('prompt').innerHTML = `${CL[q.clef].name} · תו ${S.path[q.clef].n} מתוך ${CL[q.clef].path.length}${gateLine(q.clef)}`;
   else if (G.mode === 'chain') $('prompt').innerHTML = `שרשרת של <b>${G.k}</b> · מה התו ה-${q.idx + 1}?`;
   if (G.mode === 'path' && q.chain) $('prompt').innerHTML = `${q.rev ? '🔁 ' : ''}🔗 שרשרת של <b>${q.notes.length}</b> · מה התו ה-${q.idx + 1}?`;
   else if (G.mode === 'free') $('prompt').textContent = `${CL[q.clef].name} · איזה תו זה?`;
@@ -720,6 +760,7 @@ function record(clef, d, ok, ms) {
   const mk = (G && G.mode) || 'free', M = H.modes[mk] || (H.modes[mk] = { n: 0, ok: 0 });
   M.n++; if (ok) M.ok++;
   H.hours[new Date().getHours()]++;
+  checkExt(clef);
   if (ok && ms > 150 && (!H.fastest || ms < H.fastest.ms)) H.fastest = { ms: Math.round(ms), d, clef, day: dk };
   const ks = Object.keys(H.daily); if (ks.length > 400) ks.sort().slice(0, ks.length - 400).forEach((x) => delete H.daily[x]);
 }
@@ -763,6 +804,7 @@ function pathProgress(clef, ok, ms) {
   const P = S.path[clef], len = CL[clef].path.length;
   if (!ok) { P.pts = 0; return; }
   P.pts += ms < 3000 ? 2 : 1;
+  if (P.n >= pathLimit(clef)) { P.pts = Math.min(P.pts, needPts()); return; } // waiting for 90% on the staff notes
   if (P.pts >= needPts()) {
     P.pts = 0;
     if (P.n < len) {
@@ -818,7 +860,7 @@ function locateAt(svg, ev) {
   const q = G.q, bd = CL[q.clef].bd, pt = svg.createSVGPoint();
   pt.x = ev.clientX; pt.y = ev.clientY;
   const y = pt.matrixTransform(svg.getScreenCTM().inverse()).y;
-  const r = rangeOf(q.clef, S.settings.range === 'extended');
+  const r = rangeOf(q.clef, extOn(q.clef));
   return Math.max(r[0], Math.min(r[r.length - 1], bd + Math.round((BY - y) / STEP)));
 }
 function locatePreview(d) {
@@ -850,7 +892,7 @@ function locateTap(d) {
     if (G.pendingIntro) { const intro = G.pendingIntro; G.pendingIntro = null; setTimeout(() => showIntro(intro), 450); } else setTimeout(nextQ, 700);
   } else {
     G.streak = 0; buzz(60);
-    q.reveal = rangeOf(q.clef, S.settings.range === 'extended').filter((x) => letterOf(x) === q.target).slice(0, 3);
+    q.reveal = rangeOf(q.clef, extOn(q.clef)).filter((x) => letterOf(x) === q.target).slice(0, 3);
     msg(`לחצת על ${nm(d)}. ${NAMES[q.target]} נמצא בירוק:`, 'bad'); drawQ();
     review(q.clef, q.tgt, true); bumpConf(q.clef, q.target, letterOf(d));
     if (G.mode === 'path') { pathProgress(q.clef, false, ms); G.retry = q.tgt; G.retryClef = q.clef; G.retryLoc = true; $('next').textContent = 'נסו שוב ›'; }
