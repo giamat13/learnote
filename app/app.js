@@ -709,10 +709,11 @@ function drawQ() {
     const bd = CL[q.clef].bd, Y = (d) => BY - (d - bd) * STEP;
     const top = Y(hits[hits.length - 1]) - 24, bot = Y(hits[0]) + 24, ly = bot + 18;
     const items = [], N = { stem: false, ly };
-    if (q.placed != null) items.push({ ...N, d: q.placed, x: 170, cls: q.okPlaced ? 'ok' : 'bad', label: nm(q.placed) });
-    else if (q.pending != null) items.push({ ...N, d: q.pending, x: 170, cls: 'cur', id: 'pv' });
+    if (q.bonus) (q.found || []).forEach((d, i) => items.push({ ...N, d, x: 250 + i * 36, cls: 'ok', label: nm(d) }));
+    if (q.placed != null && !q.bonus) items.push({ ...N, d: q.placed, x: 170, cls: q.okPlaced ? 'ok' : 'bad', label: nm(q.placed) });
+    if (q.pending != null) items.push({ ...N, d: q.pending, x: 170, cls: 'cur', id: 'pv' });
     q.reveal.forEach((d, i) => items.push({ ...N, d, x: 215 + i * 42, cls: 'ok ghost', label: nm(d) }));
-    $('stage').innerHTML = staffSVG(q.clef, items, { hits: q.placed == null ? hits : [], vb: [0, top, 330, bot + 28 - top], cls: 'loc' });
+    $('stage').innerHTML = staffSVG(q.clef, items, { hits: q.placed == null || q.bonus ? hits : [], vb: [0, top, 330, bot + 28 - top], cls: 'loc' });
     $('prompt').innerHTML = `${q.rev ? '🔁 ' : ''}מצאו את התו <b>${NAMES[q.target]}</b> על החמשה`;
     return;
   }
@@ -875,8 +876,27 @@ function locateConfirm() {
   if (G && isLoc() && !G.locked && G.q.pending != null) { $('ok').hidden = true; locateTap(G.q.pending); }
 }
 
+// after a correct find, the same note in other octaves on the staff can be found for a bonus; skipping is always allowed
+function leaveLoc() {
+  if (!G) return; $('next').hidden = true;
+  if (G.pendingIntro) { const intro = G.pendingIntro; G.pendingIntro = null; setTimeout(() => showIntro(intro), 300); } else nextQ();
+}
+function locateBonus(d) {
+  const q = G.q;
+  if (q.found.includes(d)) { q.pending = null; return drawQ(); }
+  q.pending = null; $('ok').hidden = true;
+  if (letterOf(d) !== q.target) { playNote(d); buzz(30); msg(`זה ${nm(d)}`, 'bad'); return drawQ(); }
+  q.found.push(d); playNote(d);
+  G.score += 10; S.totals.score += 10; hud();
+  msg('בונוס! +10', 'ok'); drawQ(); save();
+  const left = rangeOf(q.clef, extOn(q.clef)).filter((x) => letterOf(x) === q.target && !q.found.includes(x));
+  if (!left.length) { q.bonus = false; $('next').hidden = true; setTimeout(leaveLoc, 700); }
+}
+
 function locateTap(d) {
-  if (!G || G.locked || !isLoc() || G.over) return;
+  if (!G || !isLoc() || G.over) return;
+  if (G.q.bonus && !G.locked) return locateBonus(d);
+  if (G.locked) return;
   ac();
   const q = G.q, ok = letterOf(d) === q.target, ms = performance.now() - G.qStart;
   G.locked = true; G.answers++; q.placed = d; q.okPlaced = ok;
@@ -889,7 +909,9 @@ function locateTap(d) {
     msg(`${ms < 3000 ? 'בול! ⚡ ' : 'נכון! '}+${p}`, 'ok'); drawQ(); checkBadges({ ok: true, ms });
     if (G.mode === 'path') pathProgress(q.clef, true, ms);
     hud();
-    if (G.pendingIntro) { const intro = G.pendingIntro; G.pendingIntro = null; setTimeout(() => showIntro(intro), 450); } else setTimeout(nextQ, 700);
+    const more = rangeOf(q.clef, extOn(q.clef)).filter((x) => letterOf(x) === q.target && x !== d);
+    if (more.length) { q.bonus = true; q.found = [d]; q.pending = null; G.locked = false; $('next').textContent = 'דלג ›'; $('next').hidden = false; drawQ(); }
+    else if (G.pendingIntro) { const intro = G.pendingIntro; G.pendingIntro = null; setTimeout(() => showIntro(intro), 450); } else setTimeout(nextQ, 700);
   } else {
     G.streak = 0; buzz(60);
     q.reveal = rangeOf(q.clef, extOn(q.clef)).filter((x) => letterOf(x) === q.target).slice(0, 3);
@@ -939,7 +961,7 @@ const act = (a, v, el) => {
     case 'closeModal': closeModal(); render(); break;
     case 'ans': answer(Number(v)); break;
     case 'confirm': locateConfirm(); break;
-    case 'next': if (G && !$('next').hidden) nextQ(); break;
+    case 'next': if (G && !$('next').hidden) { if (G.q && G.q.bonus) { G.q.bonus = false; leaveLoc(); } else nextQ(); } break;
     case 'hint': hint(); break;
     case 'introOk': closeModal(); nextQ(); break;
     case 'weak': closeModal(); startGame('weak'); break;
