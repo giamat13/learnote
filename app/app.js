@@ -44,7 +44,7 @@ const DEF = () => ({
   hist: { daily: {}, sess: [], conf: { bass: {}, treble: {} }, modes: {}, hours: new Array(24).fill(0), fastest: null },
   pendLive: [], // same, written while a game is running (in case the tab is closed without ending it)
   pend: [], // missed notes still waiting for their review, carried to the next session
-  ext: { bass: false, treble: false }, // notes outside the five lines unlock after >=90% on the staff notes
+  ext: { bass: 0, treble: 0 }, // how many notes outside the five lines are open; each next one needs >=90% on everything open
   chainBest: { bass: 1, treble: 1 },
   sprintBest: { bass: 0, treble: 0, both: 0 },
 });
@@ -61,7 +61,11 @@ const load = () => {
     if (j) {
       const d = merge(DEF(), j);
       // older saves had ledger notes mixed into the path: hold them at the staff notes until the 90% gate is passed
-      for (const c of ['bass', 'treble']) if (!j.ext && d.path[c].n > ON_STAFF) { d.path[c].n = ON_STAFF; d.path[c].pts = 0; d.path[c].done = false; }
+      for (const c of ['bass', 'treble']) {
+        d.ext[c] = d.ext[c] === true ? 1 : Math.max(0, Math.min(Number(d.ext[c]) || 0, CL[c].path.length - ON_STAFF));
+        const lim = ON_STAFF + d.ext[c];
+        if (d.path[c].n > lim) { d.path[c].n = lim; d.path[c].pts = 0; d.path[c].done = false; }
+      }
       return d;
     }
   } catch (e) {}
@@ -224,20 +228,27 @@ const voice = (c, dest, d, dur, vol) => {
 const buzz = (ms) => { try { if (navigator.vibrate) navigator.vibrate(ms); } catch (e) {} };
 
 /* ============ notes outside the staff: unlocked by mastering the staff notes ============ */
-// every one of the 9 notes on the lines and spaces answered >= 3 times, average (lifetime + recent) accuracy >= 90%
+// the notes currently open: the 9 on the staff plus the outside-staff notes opened so far (in path order)
+const extCount = (clef) => Number(S.ext[clef]) || 0;
+const extTotal = (clef) => CL[clef].path.length - ON_STAFF;
+const openNotes = (clef) => rangeOf(clef, false).concat(CL[clef].path.slice(ON_STAFF, ON_STAFF + extCount(clef))).sort((a, b) => a - b);
+// every open note answered >= 3 times, average accuracy (lifetime + recent) >= 90%
 function staffMastery(clef) {
-  const ds = rangeOf(clef, false); let sum = 0, seen = 0;
+  const ds = openNotes(clef); let sum = 0, seen = 0;
   for (const d of ds) { const x = S.stats[clef][d]; if (x && x.n >= EXT_MIN) { seen++; sum += (x.ok / x.n + (x.e == null ? x.ok / x.n : x.e)) / 2; } }
   const avg = sum / ds.length;
   return { seen, total: ds.length, pct: Math.round(avg * 100), ready: seen === ds.length && avg >= EXT_PCT };
 }
-const extOpen = (clef) => !!S.ext[clef];
-const extOn = (clef) => S.settings.range === 'extended' && extOpen(clef);
-const pathLimit = (clef) => (extOpen(clef) ? CL[clef].path.length : ON_STAFF);
+const extOpen = (clef) => extCount(clef) > 0;
+const extFull = (clef) => extCount(clef) >= extTotal(clef);
+// notes that sprint / free practice / locate may use
+const rangeFor = (clef) => (S.settings.range === 'extended' ? openNotes(clef) : rangeOf(clef, false));
+const pathLimit = (clef) => ON_STAFF + extCount(clef);
+// one new note at a time: the next one waits until everything open is at 90% again
 function checkExt(clef) {
-  if (extOpen(clef) || !staffMastery(clef).ready) return;
-  S.ext[clef] = true; track('ext_unlocked', { clef });
-  toast(`🔓 נפתחו תווים מעל ומתחת לחמשה (${CL[clef].short})`);
+  if (extFull(clef) || !staffMastery(clef).ready) return;
+  S.ext[clef] = extCount(clef) + 1; track('ext_unlocked', { clef, count: S.ext[clef] });
+  toast(`🔓 נפתח תו חדש מחוץ לחמשה (${CL[clef].short})`);
 }
 
 /* ============ staff drawing ============ */
@@ -369,8 +380,8 @@ function homeHTML() {
     const n = S.path[c].n, len = CL[c].path.length;
     const chips = CL[c].path.map((d, i) => `<span class="chip ${i < n ? 'on' : ''}">${i < n ? nm(d) : '·'}</span>`).join('');
     const m = staffMastery(c);
-    const gate = extOpen(c) ? '<small>🔓 תווים מחוץ לחמשה פתוחים</small>'
-      : `<div style="margin-top:8px"><small>🔒 תווים מחוץ לחמשה נפתחים ב-90% על החמשה · עכשיו ${m.pct}%${m.seen < m.total ? ` · ${m.seen}/${m.total} תווים תורגלו` : ''}</small><div class="bar" style="margin:6px 0 0"><i style="width:${Math.min(100, Math.round(m.pct / EXT_PCT / 100 * 100))}%"></i></div></div>`;
+    const gate = extFull(c) ? '<small>🔓 כל התווים מחוץ לחמשה פתוחים</small>'
+      : `<div style="margin-top:8px"><small>🔒 ${extOpen(c) ? 'התו הבא מחוץ לחמשה' : 'תווים מחוץ לחמשה'} ${extOpen(c) ? 'ייפתח' : 'ייפתחו'} ב-90% על כל התווים הפתוחים · עכשיו ${m.pct}%${m.seen < m.total ? ` · ${m.seen}/${m.total} תווים תורגלו` : ''}</small><div class="bar" style="margin:6px 0 0"><i style="width:${Math.min(100, Math.round(m.pct / EXT_PCT / 100 * 100))}%"></i></div></div>`;
     return `<div class="card"><b>${CL[c].name}</b> <small>· ${n} מתוך ${len} תווים פתוחים</small><div class="chips">${chips}</div>${gate}</div>`;
   }).join('');
   const acc = S.totals.answers ? Math.round((S.totals.correct / S.totals.answers) * 100) : 0;
@@ -648,7 +659,7 @@ const poolFor = (mode, clef) => {
     return un.slice().sort((a, b) => sc(a) - sc(b)).slice(0, Math.max(2, Math.ceil(un.length / 2)));
   }
   if (mode === 'chain') return CL[clef].path.slice(0, Math.max(S.path[clef].n, 4));
-  return rangeOf(clef, extOn(clef));
+  return rangeFor(clef);
 };
 
 function pickNote(clef, pool, prev, boost) {
@@ -693,7 +704,7 @@ function nextQ() {
   const chosen = G.retry != null ? G.retry : due ? due.d : null;
   const rv = !!due, rs = due ? due.stage || 0 : -1, rd = due ? due.d : null;
   if (asLoc) {
-    const pool = G.mode === 'locate' ? rangeOf(clef, extOn(clef)) : poolFor(G.mode, clef);
+    const pool = G.mode === 'locate' ? rangeFor(clef) : poolFor(G.mode, clef);
     const d = chosen != null ? chosen : pickNote(clef, pool, G.prev, boost);
     G.prev = d;
     G.q = { clef, loc: true, rev: rv, rs, rd, tgt: d, target: letterOf(d), placed: null, pending: null, reveal: [] };
@@ -720,15 +731,15 @@ function nextQ() {
 
 // path mode, all staff notes open but the 90% gate is still closed: show how close the learner is
 function gateLine(clef) {
-  if (extOpen(clef) || S.path[clef].n < ON_STAFF) return '';
+  if (extFull(clef) || S.path[clef].n < pathLimit(clef)) return '';
   const m = staffMastery(clef);
-  return `<br><small>לפתיחת תווים מחוץ לחמשה: 90% על תווי החמשה · עכשיו ${m.pct}%${m.seen < m.total ? ` · עוד ${m.total - m.seen} תווים לתרגל לפחות ${EXT_MIN} פעמים` : ''}</small>`;
+  return `<br><small>לפתיחת התו הבא: 90% על כל התווים הפתוחים · עכשיו ${m.pct}%${m.seen < m.total ? ` · עוד ${m.total - m.seen} תווים לתרגל לפחות ${EXT_MIN} פעמים` : ''}</small>`;
 }
 
 function drawQ() {
   const q = G.q;
   if (q.loc) {
-    const hits = rangeOf(q.clef, extOn(q.clef));
+    const hits = rangeFor(q.clef);
     const bd = CL[q.clef].bd, Y = (d) => BY - (d - bd) * STEP;
     const top = Y(hits[hits.length - 1]) - 24, bot = Y(hits[0]) + 24, ly = bot + 18;
     const items = [], N = { stem: false, ly };
@@ -847,7 +858,7 @@ function pathProgress(clef, ok, ms) {
   const P = S.path[clef], len = CL[clef].path.length;
   if (!ok) { P.pts = 0; return; }
   P.pts += ms < 3000 ? 2 : 1;
-  if (P.n >= pathLimit(clef)) { P.pts = Math.min(P.pts, needPts()); return; } // waiting for 90% on the staff notes
+  if (P.n >= pathLimit(clef)) { P.pts = Math.min(P.pts, needPts()); return; } // waiting for 90% on every open note
   if (P.pts >= needPts()) {
     P.pts = 0;
     if (P.n < len) {
@@ -903,8 +914,9 @@ function locateAt(svg, ev) {
   const q = G.q, bd = CL[q.clef].bd, pt = svg.createSVGPoint();
   pt.x = ev.clientX; pt.y = ev.clientY;
   const y = pt.matrixTransform(svg.getScreenCTM().inverse()).y;
-  const r = rangeOf(q.clef, extOn(q.clef));
-  return Math.max(r[0], Math.min(r[r.length - 1], bd + Math.round((BY - y) / STEP)));
+  const r = rangeFor(q.clef);
+  const t = bd + Math.round((BY - y) / STEP); // nearest note that is open
+  return r.reduce((best, x) => (Math.abs(x - t) < Math.abs(best - t) ? x : best), r[0]);
 }
 function locatePreview(d) {
   const q = G.q; if (d === q.pending) return;
@@ -931,7 +943,7 @@ function locateBonus(d) {
   q.found.push(d); playNote(d);
   G.score += 10; S.totals.score += 10; hud();
   msg('בונוס! +10', 'ok'); drawQ(); save();
-  const left = rangeOf(q.clef, extOn(q.clef)).filter((x) => letterOf(x) === q.target && !q.found.includes(x));
+  const left = rangeFor(q.clef).filter((x) => letterOf(x) === q.target && !q.found.includes(x));
   if (!left.length) { q.bonus = false; $('next').hidden = true; setTimeout(leaveLoc, 700); }
 }
 
@@ -951,13 +963,13 @@ function locateTap(d) {
     msg(`${ms < 3000 ? 'בול! ⚡ ' : 'נכון! '}+${p}`, 'ok'); drawQ(); checkBadges({ ok: true, ms });
     if (G.mode === 'path') pathProgress(q.clef, true, ms);
     hud();
-    const more = rangeOf(q.clef, extOn(q.clef)).filter((x) => letterOf(x) === q.target && x !== d);
+    const more = rangeFor(q.clef).filter((x) => letterOf(x) === q.target && x !== d);
     reviewUp(q, q.clef, q.tgt, true);
     if (more.length) { q.bonus = true; q.found = [d]; q.pending = null; G.locked = false; $('next').textContent = 'דלג ›'; $('next').hidden = false; drawQ(); }
     else if (G.pendingIntro) { const intro = G.pendingIntro; G.pendingIntro = null; setTimeout(() => showIntro(intro), 450); } else setTimeout(nextQ, 700);
   } else {
     G.streak = 0; buzz(60);
-    q.reveal = rangeOf(q.clef, extOn(q.clef)).filter((x) => letterOf(x) === q.target).slice(0, 3);
+    q.reveal = rangeFor(q.clef).filter((x) => letterOf(x) === q.target).slice(0, 3);
     msg(`לחצת על ${nm(d)}. ${NAMES[q.target]} נמצא בירוק (${placeText(q.clef, q.tgt)}):`, 'bad'); drawQ();
     review(q.clef, q.tgt, true); bumpConf(q.clef, q.target, letterOf(d));
     if (G.mode === 'path') { pathProgress(q.clef, false, ms); G.retry = q.tgt; G.retryClef = q.clef; G.retryLoc = true; $('next').textContent = 'נסו שוב ›'; }
